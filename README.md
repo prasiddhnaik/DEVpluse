@@ -6,6 +6,7 @@ before something broke.
 
 ```bash
 devpulse serve          # the daemon: discovery + local API on 127.0.0.1:7778
+devpulse serve --headless   # same, JSON ready line, no dashboard needed
 cd apps/web && bun dev  # the dashboard: http://localhost:3000
 ```
 
@@ -15,6 +16,7 @@ into projects.
 
 What it does for you, end to end — projects, services, topology, warnings,
 “what changed”, safety limits — is in [`docs/for-developers.md`](docs/for-developers.md).
+Coding agents should use [`docs/for-agents.md`](docs/for-agents.md).
 
 ## What it shows
 
@@ -60,6 +62,7 @@ Useful flags:
 | `--no-persistence` | Keep history in memory only; write nothing to disk. |
 | `--no-docker` | Skip the Docker probe entirely. |
 | `--docker-stats` | Per-container CPU/memory. Costs ~1s per snapshot batch. |
+| `--headless` | Wait for the first snapshot, print one JSON ready line, serve without a dashboard. For agents: [`docs/for-agents.md`](docs/for-agents.md). |
 
 The CLI also answers questions without the daemon:
 
@@ -70,6 +73,10 @@ devpulse scan-projects       # how processes group into projects
 devpulse resolve-project .   # which project root a directory resolves to, and why
 devpulse capabilities        # what this OS will and will not disclose
 devpulse bench               # collector cost against the polling budget
+
+# against a running daemon (compact JSON, for agents)
+devpulse now --here          # this repo's projects, warnings, recent events
+devpulse watch               # NDJSON event/warning/service frames
 ```
 
 ## The dashboard
@@ -124,7 +131,7 @@ crates/devpulse-events      snapshot diffing, warning rules, correlation
 crates/devpulse-docker      Docker inspection via Bollard
 crates/devpulse-storage     SQLite persistence and retention
 crates/devpulse-server      the daemon: snapshot loop, HTTP + WebSocket API
-crates/devpulse-cli         the `devpulse` binary
+crates/devpulse-cli         the `devpulse` binary (scans, daemon, headless agent CLI)
 apps/web                    the dashboard (Next.js, TypeScript, Tailwind)
 fixtures                    deterministic TCP fixtures used by the tests
 docs                        API contract, spike results, verification records

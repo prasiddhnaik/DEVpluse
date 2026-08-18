@@ -369,9 +369,11 @@ dependencies = [
  "devpulse-core",
  "devpulse-discovery",
  "devpulse-server",
+ "futures-util",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
 ]

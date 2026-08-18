@@ -20,7 +20,8 @@ you run `devpulse serve`
 ```
 
 This document is the product, end to end. Install commands live in `README.md`.
-The HTTP contract lives in `docs/api-contract.md`.
+The HTTP contract lives in `docs/api-contract.md`. Agents should read
+`docs/for-agents.md` and use `devpulse serve --headless` plus `devpulse now`.
 
 **UI: "local pulse worker" = the local DevPulse daemon (`devpulse serve`).**
 Developers should keep saying *daemon* in code, crates, and PRs. Do not put
@@ -59,7 +60,7 @@ The dashboard never invents health, topology, or identity. If a fact is on
 screen, the daemon said it.
 
 You can skip the dashboard. The CLI answers one-shot questions without a
-daemon:
+daemon, and talks to a running daemon in compact JSON (see `docs/for-agents.md`):
 
 ```bash
 devpulse scan-processes
@@ -68,6 +69,9 @@ devpulse scan-projects
 devpulse resolve-project .
 devpulse capabilities
 devpulse bench
+devpulse serve --headless
+devpulse now --here
+devpulse watch
 ```
 
 ---

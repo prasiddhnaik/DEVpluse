@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use devpulse_cli::agent::{self, NOW_EVENT_LIMIT};
 use devpulse_core::{NoProject, ProjectMatch, ProjectResolver, ResolverConfig};
 use devpulse_discovery::{
     Netstat2SocketCollector, ObservedProcess, ProcessCollector, ProcessSnapshot, SocketCollector,
@@ -24,7 +25,7 @@ use devpulse_server::security::DEFAULT_PORT;
 #[command(
     name = "devpulse",
     version,
-    about = "Local-first developer runtime discovery (Milestone 0 spike CLI)"
+    about = "Local-first developer runtime observer. The CLI is also the agent interface."
 )]
 struct Cli {
     /// Emit JSON instead of a table.
@@ -55,12 +56,30 @@ enum Command {
     Capabilities,
     /// Run the daemon: continuous discovery plus the local HTTP/WebSocket API.
     Serve(ServeArgs),
+    /// Compact snapshot for agents: projects, warnings, recent events.
+    Now(NowArgs),
+    /// Daemon liveness and collector cost (`GET /api/v1/status`).
+    Status(ConnectArgs),
+    /// Project cards (`GET /api/v1/projects`).
+    Projects(ConnectArgs),
+    /// One project, its services, edges and recent events.
+    Project(IdArgs),
+    /// One service, stripped of resource history.
+    Service(IdArgs),
+    /// Recent events, newest first.
+    Events(EventsArgs),
+    /// Active warnings.
+    Warnings(WarningsArgs),
+    /// What happened around one event.
+    Context(ContextArgs),
+    /// Stream incremental daemon frames as NDJSON (no snapshot by default).
+    Watch(WatchArgs),
 }
 
 #[derive(Debug, Args)]
 struct ServeArgs {
     /// Port to listen on. The address is always loopback.
-    #[arg(long, default_value_t = DEFAULT_PORT)]
+    #[arg(long, default_value_t = DEFAULT_PORT, env = "DEVPULSE_PORT")]
     port: u16,
 
     /// Seconds between snapshots.
@@ -83,6 +102,85 @@ struct ServeArgs {
     /// Keep no history on disk. Events live in memory and die with the daemon.
     #[arg(long)]
     no_persistence: bool,
+
+    /// Agent mode: wait for the first snapshot, print one JSON ready line on
+    /// stdout, then serve quietly. No dashboard required.
+    #[arg(long)]
+    headless: bool,
+}
+
+/// How to reach a running daemon. Always loopback; the port is the only knob.
+#[derive(Debug, Args)]
+struct ConnectArgs {
+    /// Daemon port.
+    #[arg(long, default_value_t = DEFAULT_PORT, env = "DEVPULSE_PORT")]
+    port: u16,
+}
+
+#[derive(Debug, Args)]
+struct NowArgs {
+    #[command(flatten)]
+    connect: ConnectArgs,
+    /// Only projects that enclose the current working directory.
+    #[arg(long)]
+    here: bool,
+    /// How many recent events to include.
+    #[arg(long, default_value_t = NOW_EVENT_LIMIT)]
+    events: usize,
+}
+
+#[derive(Debug, Args)]
+struct IdArgs {
+    #[command(flatten)]
+    connect: ConnectArgs,
+    id: String,
+}
+
+#[derive(Debug, Args)]
+struct EventsArgs {
+    #[command(flatten)]
+    connect: ConnectArgs,
+    #[arg(long)]
+    project: Option<String>,
+    #[arg(long)]
+    service: Option<String>,
+    #[arg(long)]
+    since: Option<String>,
+    #[arg(long, default_value_t = 100)]
+    limit: usize,
+}
+
+#[derive(Debug, Args)]
+struct WarningsArgs {
+    #[command(flatten)]
+    connect: ConnectArgs,
+    #[arg(long)]
+    project: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct ContextArgs {
+    #[command(flatten)]
+    connect: ConnectArgs,
+    id: String,
+    /// Window around the event, in milliseconds.
+    #[arg(long, default_value_t = 30_000)]
+    window_ms: u64,
+}
+
+#[derive(Debug, Args)]
+struct WatchArgs {
+    #[command(flatten)]
+    connect: ConnectArgs,
+    /// Comma-separated frame types. Default skips the heavy snapshot.
+    #[arg(
+        long,
+        default_value = "events,warnings_changed,services_changed,topology_changed"
+    )]
+    types: String,
+    /// Include the initial snapshot frame (the whole world).
+    #[arg(long)]
+    snapshot: bool,
 }
 
 #[derive(Debug, Args)]
@@ -165,6 +263,35 @@ async fn main() -> Result<()> {
         Command::ResolveProject(args) => resolve_project(&cli, args),
         Command::Bench(args) => bench(&cli, args).await,
         Command::Serve(args) => serve(args).await,
+        Command::Now(args) => now(&cli, args).await,
+        Command::Status(args) => query(&cli, args.port, "/api/v1/status").await,
+        Command::Projects(args) => query(&cli, args.port, "/api/v1/projects").await,
+        Command::Project(args) => {
+            query(
+                &cli,
+                args.connect.port,
+                &format!("/api/v1/projects/{}", args.id),
+            )
+            .await
+        }
+        Command::Service(args) => {
+            query(
+                &cli,
+                args.connect.port,
+                &format!("/api/v1/services/{}", args.id),
+            )
+            .await
+        }
+        Command::Events(args) => events(&cli, args).await,
+        Command::Warnings(args) => warnings(&cli, args).await,
+        Command::Context(args) => {
+            let path = format!(
+                "/api/v1/events/{}/context?window_ms={}",
+                args.id, args.window_ms
+            );
+            query(&cli, args.connect.port, &path).await
+        }
+        Command::Watch(args) => watch(args).await,
         Command::Capabilities => {
             let caps = capabilities();
             if cli.json {
@@ -419,6 +546,22 @@ async fn serve(args: &ServeArgs) -> Result<()> {
     let database = config.database.clone();
     let daemon = Daemon::bind(config).await?;
     let addr = daemon.local_addr()?;
+    let state = daemon.state();
+
+    if args.headless {
+        let server = tokio::spawn(async move { daemon.serve().await });
+        if let Err(error) = agent::wait_for_first_tick(&state, Duration::from_secs(15)).await {
+            server.abort();
+            let _ = agent::print_json(
+                false,
+                &serde_json::json!({ "ok": false, "error": error.to_string() }),
+            );
+            return Err(error);
+        }
+        agent::print_json(false, &agent::ready_line(addr))?;
+        return server.await.context("daemon task")?.context("serving");
+    }
+
     println!("devpulse daemon listening on http://{addr}");
     match &database {
         Some(path) => println!("  history   {}", path.display()),
@@ -429,6 +572,61 @@ async fn serve(args: &ServeArgs) -> Result<()> {
     println!("press ctrl-c to stop");
 
     daemon.serve().await
+}
+
+async fn now(cli: &Cli, args: &NowArgs) -> Result<()> {
+    let here = if args.here {
+        Some(std::env::current_dir().context("current directory")?)
+    } else {
+        None
+    };
+    match agent::fetch_now(args.connect.port, here.as_deref(), args.events).await {
+        Ok(value) => agent::print_json(cli.json, &value),
+        Err(error) => {
+            agent::print_unreachable(agent::daemon_addr(args.connect.port), &error);
+            std::process::exit(2);
+        }
+    }
+}
+
+async fn query(cli: &Cli, port: u16, path: &str) -> Result<()> {
+    match agent::fetch_path(port, path).await {
+        Ok(value) => agent::print_json(cli.json, &agent::strip_heavy(value)),
+        Err(error) => {
+            agent::print_unreachable(agent::daemon_addr(port), &error);
+            std::process::exit(2);
+        }
+    }
+}
+
+async fn events(cli: &Cli, args: &EventsArgs) -> Result<()> {
+    let mut path = format!("/api/v1/events?limit={}", args.limit.clamp(1, 1000));
+    if let Some(project) = &args.project {
+        path.push_str("&project_id=");
+        path.push_str(project);
+    }
+    if let Some(service) = &args.service {
+        path.push_str("&service_id=");
+        path.push_str(service);
+    }
+    if let Some(since) = &args.since {
+        path.push_str("&since=");
+        path.push_str(since);
+    }
+    query(cli, args.connect.port, &path).await
+}
+
+async fn warnings(cli: &Cli, args: &WarningsArgs) -> Result<()> {
+    let path = match &args.project {
+        Some(project) => format!("/api/v1/warnings?project_id={project}"),
+        None => "/api/v1/warnings".to_string(),
+    };
+    query(cli, args.connect.port, &path).await
+}
+
+async fn watch(args: &WatchArgs) -> Result<()> {
+    let types = agent::parse_watch_types(&args.types);
+    agent::watch(args.connect.port, &types, args.snapshot).await
 }
 
 async fn bench(cli: &Cli, args: &BenchArgs) -> Result<()> {
