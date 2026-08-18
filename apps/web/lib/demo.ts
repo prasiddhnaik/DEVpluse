@@ -259,6 +259,13 @@ export const DEMO_GRAPH: Graph = {
   edges: [DEMO_CONNECTION],
 };
 
+/** Catch-all slugs prerendered so a static host can hard-refresh demo deep links. */
+export const DEMO_STATIC_SLUGS: string[][] = [
+  [],
+  ["projects", DEMO_PROJECT.id],
+  ...DEMO_SERVICES.map((service) => ["services", service.id]),
+];
+
 export function demoServiceDetail(id: string): ServiceDetail | null {
   const service = DEMO_SERVICES.find((item) => item.id === id);
   if (!service) return null;

@@ -1,5 +1,9 @@
 {
   "framework": "nextjs",
   "installCommand": "bun install",
-  "buildCommand": "NEXT_PUBLIC_RUNSCAPE_DEMO=1 bun run build"
+  "buildCommand": "NEXT_PUBLIC_RUNSCAPE_DEMO=1 bun run build",
+  "rewrites": [
+    { "source": "/projects/:id", "destination": "/index.html" },
+    { "source": "/services/:id", "destination": "/index.html" }
+  ]
 }

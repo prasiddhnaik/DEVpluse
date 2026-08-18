@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { DEMO_SERVICES, DEMO_STATUS, demoServiceDetail } from "./demo";
+import { DEMO_SERVICES, DEMO_STATIC_SLUGS, DEMO_STATUS, demoServiceDetail } from "./demo";
 
 describe("demo fixtures", () => {
   test("resource history carries every measured field the charts bind to", () => {
@@ -19,6 +19,15 @@ describe("demo fixtures", () => {
     expect(DEMO_STATUS.host_history?.length).toBeGreaterThanOrEqual(2);
     expect(DEMO_STATUS.host?.process_count).toBeGreaterThan(0);
     expect(DEMO_STATUS.host?.load_avg_1).toBeGreaterThan(0);
+  });
+
+  test("static export prerenders the fixture project and services", () => {
+    expect(DEMO_STATIC_SLUGS).toEqual([
+      [],
+      ["projects", "prj_demo"],
+      ["services", "svc_demo_web"],
+      ["services", "svc_demo_api"],
+    ]);
   });
 
   test("service detail splits observed edges without inventing new ones", () => {
