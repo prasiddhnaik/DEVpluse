@@ -12,18 +12,20 @@
 //! - event derivation
 //! - resource sampling
 
+use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
 use devpulse_core::grouping::{GroupingEngine, GroupingInput};
 use devpulse_core::identity::{Runtime, ServiceFingerprint};
+use devpulse_core::ids::{ProjectId, ServiceId};
 use devpulse_core::model::{Endpoint, ProcessInstance, Protocol, Service, ServiceKind};
+use devpulse_core::model::{Project, ResourceSample};
 use devpulse_core::project::{ProjectResolver, ResolverConfig};
 use devpulse_core::registry::{RegistryDelta, ServiceObservation, ServiceRegistry};
-use devpulse_core::resources::ResourceHistory;
 use devpulse_core::topology::{ObservedConnectionEndpoints, TopologyBuilder, TopologyDelta};
 use devpulse_discovery::error::CollectorError;
 use devpulse_discovery::process::{ProcessCollector, SysinfoProcessCollector};
-use devpulse_discovery::socket::{SocketCollector, Netstat2SocketCollector};
+use devpulse_discovery::socket::{Netstat2SocketCollector, SocketCollector};
 use tracing::debug;
 
 /// Default polling interval: 1 second (`TASKS.md`).
@@ -47,12 +49,32 @@ impl Default for SnapshotConfig {
     }
 }
 
+/// How one collector behaved on the last tick. Surfaced by `/api/v1/status`
+/// so a developer can see *why* the view is thin — a degraded field count is
+/// the honest version of missing data (`AGENTS.md` rule 3).
+#[derive(Debug, Clone, Default)]
+pub struct CollectorTiming {
+    pub duration_ms: u64,
+    pub last_run: Option<SystemTime>,
+    /// Field name -> number of processes it could not be read for.
+    pub degraded_fields: BTreeMap<String, usize>,
+    /// Socket collector only: sockets the OS would not attribute to a PID.
+    pub sockets_without_owner: Option<usize>,
+}
+
 /// Result of one snapshot tick.
 #[derive(Debug, Default)]
 pub struct TickResult {
+    /// The instant the tick reconciled against; every derived event uses it.
+    pub at: Option<SystemTime>,
     pub registry_delta: RegistryDelta,
     pub topology_delta: TopologyDelta,
+    /// One sample per running service, for whoever keeps history.
+    pub samples: Vec<(ServiceId, ResourceSample)>,
+    /// Wall time of the whole collection phase (both collectors run together).
     pub collector_duration_ms: u64,
+    pub process: CollectorTiming,
+    pub socket: CollectorTiming,
 }
 
 /// The snapshot loop engine.
@@ -66,7 +88,9 @@ pub struct SnapshotLoop {
     grouping_engine: GroupingEngine,
     registry: ServiceRegistry,
     topology_builder: TopologyBuilder,
-    resource_history: ResourceHistory,
+    /// Projects seen on the most recent tick. The grouping engine is
+    /// stateless per tick, so the loop is what remembers them.
+    projects: BTreeMap<ProjectId, Project>,
 }
 
 impl SnapshotLoop {
@@ -82,7 +106,7 @@ impl SnapshotLoop {
             grouping_engine,
             registry: ServiceRegistry::new(),
             topology_builder: TopologyBuilder::new(),
-            resource_history: ResourceHistory::new(),
+            projects: BTreeMap::new(),
         }
     }
 
@@ -133,6 +157,7 @@ impl SnapshotLoop {
             .collect();
 
         let grouping_outcome = self.grouping_engine.group(&grouping_inputs, at);
+        self.remember_projects(&grouping_outcome.projects);
 
         // 3. Convert processes to service observations.
         let mut observations = Vec::new();
@@ -232,28 +257,75 @@ impl SnapshotLoop {
         let services: Vec<&Service> = self.registry.services().collect();
         let topology_delta = self.topology_builder.observe(&services, &established, at);
 
-        // 6. Record resource samples.
-        for service in &services {
-            if service.is_running() {
-                let sample = devpulse_core::model::ResourceSample {
-                    at,
-                    cpu_percent: service.total_cpu_percent(),
-                    memory_bytes: service.total_memory_bytes(),
-                };
-                self.resource_history.record(&service.id, sample);
-            }
-        }
-
-        // 7. Clean up resource history for evicted services.
-        for evicted_id in &registry_delta.evicted {
-            self.resource_history.forget(evicted_id);
-        }
+        // 6. Sample resources. The samples are returned rather than stored:
+        // history belongs to whoever serves it (`state::RuntimeView`), so
+        // there is exactly one copy of it in the daemon.
+        let samples: Vec<(ServiceId, ResourceSample)> = services
+            .iter()
+            .filter(|s| s.is_running())
+            .map(|s| {
+                (
+                    s.id.clone(),
+                    ResourceSample {
+                        at,
+                        cpu_percent: s.total_cpu_percent(),
+                        memory_bytes: s.total_memory_bytes(),
+                    },
+                )
+            })
+            .collect();
 
         Ok(TickResult {
+            at: Some(at),
             registry_delta,
             topology_delta,
+            samples,
             collector_duration_ms,
+            process: CollectorTiming {
+                duration_ms: process_snapshot.duration.as_millis() as u64,
+                last_run: Some(process_snapshot.captured_at),
+                degraded_fields: degraded_fields(&process_snapshot.degradations),
+                sockets_without_owner: None,
+            },
+            socket: CollectorTiming {
+                duration_ms: socket_snapshot.duration.as_millis() as u64,
+                last_run: Some(socket_snapshot.captured_at),
+                degraded_fields: BTreeMap::new(),
+                sockets_without_owner: Some(socket_snapshot.sockets_without_owner),
+            },
         })
+    }
+
+    /// Merge this tick's projects into the remembered set, preserving
+    /// `first_seen`: a project that has been up all morning must not look new
+    /// because the grouping engine rebuilt it a second ago.
+    fn remember_projects(&mut self, seen: &BTreeMap<ProjectId, Project>) {
+        for (id, project) in seen {
+            match self.projects.get_mut(id) {
+                Some(existing) => {
+                    existing.last_seen = project.last_seen;
+                    existing.name = project.name.clone();
+                    existing.confidence = project.confidence;
+                }
+                None => {
+                    self.projects.insert(id.clone(), project.clone());
+                }
+            }
+        }
+        // A project with no live service is gone; the registry is the authority
+        // on what is still running.
+        let live: std::collections::BTreeSet<ProjectId> = self
+            .registry
+            .services()
+            .filter_map(|s| s.project_id.clone())
+            .collect();
+        self.projects
+            .retain(|id, _| seen.contains_key(id) || live.contains(id));
+    }
+
+    /// Projects observed on the most recent tick.
+    pub fn projects(&self) -> &BTreeMap<ProjectId, Project> {
+        &self.projects
     }
 
     /// Accessors for the current state.
@@ -265,13 +337,27 @@ impl SnapshotLoop {
         self.topology_builder.topology()
     }
 
-    pub fn resource_history(&self) -> &ResourceHistory {
-        &self.resource_history
-    }
-
     pub fn grouping_engine(&self) -> &GroupingEngine {
         &self.grouping_engine
     }
+}
+
+/// Name the missing fields the way `/status` reports them. Only non-zero
+/// counts are reported: an empty map means nothing was degraded.
+fn degraded_fields(d: &devpulse_discovery::process::Degradations) -> BTreeMap<String, usize> {
+    let mut out = BTreeMap::new();
+    for (name, count) in [
+        ("cwd", d.missing_cwd),
+        ("executable", d.missing_executable),
+        ("command", d.missing_command),
+        ("parent_pid", d.missing_parent),
+        ("user", d.missing_user),
+    ] {
+        if count > 0 {
+            out.insert(name.to_string(), count);
+        }
+    }
+    out
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -290,7 +376,6 @@ pub enum SnapshotError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::UNIX_EPOCH;
 
     #[test]
     fn snapshot_loop_constructs() {

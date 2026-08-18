@@ -1,0 +1,54 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/devpulse-core",
+    "crates/devpulse-discovery",
+    "crates/devpulse-events",
+    "crates/devpulse-storage",
+    "crates/devpulse-docker",
+    "crates/devpulse-server",
+    "crates/devpulse-cli",
+    "fixtures",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+devpulse-core = { path = "crates/devpulse-core" }
+devpulse-discovery = { path = "crates/devpulse-discovery" }
+devpulse-events = { path = "crates/devpulse-events" }
+devpulse-storage = { path = "crates/devpulse-storage" }
+devpulse-docker = { path = "crates/devpulse-docker" }
+devpulse-server = { path = "crates/devpulse-server" }
+
+anyhow = "1.0.104"
+async-trait = "0.1.92"
+axum = { version = "0.8.9", features = ["ws"] }
+bollard = "0.21.1"
+clap = { version = "4.6.6", features = ["derive"] }
+futures-util = "0.3.34"
+notify = "8.2.0"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+tower-http = { version = "0.7.0", features = ["cors", "trace"] }
+netstat2 = "0.11.2"
+regex = "1.11"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10"
+sysinfo = "0.39.6"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tempfile = "3.24"
+tower = { version = "0.5.3", features = ["util"] }
+tokio-tungstenite = "0.29.0"
+
+[profile.release]
+lto = "thin"
+strip = true

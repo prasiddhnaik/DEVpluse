@@ -55,6 +55,53 @@ fn civil_from_unix(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
     )
 }
 
+/// Parse the subset of RFC 3339 the API accepts: UTC only, `Z` suffix, with an
+/// optional fractional part that is truncated to whole seconds. Anything else
+/// is a `bad_request` rather than a silently wrong time.
+pub fn parse_rfc3339(input: &str) -> Option<SystemTime> {
+    let input = input.trim();
+    let (date, rest) = input.split_once('T')?;
+    let time = rest.strip_suffix('Z').or_else(|| rest.strip_suffix('z'))?;
+    let time = time
+        .split_once('.')
+        .map_or(time, |(whole, _fraction)| whole);
+
+    let mut date_parts = date.split('-');
+    let year: i64 = date_parts.next()?.parse().ok()?;
+    let month: i64 = date_parts.next()?.parse().ok()?;
+    let day: i64 = date_parts.next()?.parse().ok()?;
+    if date_parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+
+    let mut time_parts = time.split(':');
+    let hour: i64 = time_parts.next()?.parse().ok()?;
+    let minute: i64 = time_parts.next()?.parse().ok()?;
+    let second: i64 = time_parts.next()?.parse().ok()?;
+    if time_parts.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+
+    let days = days_from_civil(year, month, day);
+    let secs = days * 86_400 + hour * 3600 + minute * 60 + second;
+    if secs < 0 {
+        // Pre-epoch instants have no meaning for a daemon that started today.
+        return Some(UNIX_EPOCH);
+    }
+    Some(UNIX_EPOCH + Duration::from_secs(secs as u64))
+}
+
+/// Inverse of [`civil_from_unix`] (Howard Hinnant's days-from-civil).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceDto {
     pub evidence_type: String,
@@ -386,6 +433,71 @@ impl ApiErrorDto {
     }
 }
 
+/// Service detail: the service plus the things only the detail view needs
+/// (`docs/api-contract.md` `GET /api/v1/services/:id`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceDetailDto {
+    #[serde(flatten)]
+    pub service: ServiceDto,
+    pub connections: ServiceConnectionsDto,
+    pub recent_events: Vec<EventDto>,
+}
+
+/// Edges split by direction so the inspector can say "calls" and "called by"
+/// without the client re-deriving it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ServiceConnectionsDto {
+    pub outbound: Vec<ConnectionDto>,
+    pub inbound: Vec<ConnectionDto>,
+}
+
+/// Everything the project view needs in one round trip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectDetailDto {
+    pub project: ProjectSummaryDto,
+    pub services: Vec<ServiceDto>,
+    pub connections: Vec<ConnectionDto>,
+    pub warnings: Vec<WarningDto>,
+    pub recent_events: Vec<EventDto>,
+}
+
+/// Whether Docker could be inspected, and if not, why — phrased for a human.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockerStatusDto {
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct CountsDto {
+    pub projects: usize,
+    pub services: usize,
+    pub connections: usize,
+    pub events: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CollectorsDto {
+    pub process: CollectorStatusDto,
+    pub socket: CollectorStatusDto,
+}
+
+/// `GET /api/v1/status`. Cheap enough to poll, and the only endpoint that is
+/// meaningful before the first tick has completed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusDto {
+    pub version: String,
+    pub started_at: String,
+    pub uptime_ms: u64,
+    /// [`devpulse_discovery::platform::PlatformCapabilities`], serialised as-is:
+    /// the capability matrix is already the contract shape.
+    pub platform: serde_json::Value,
+    pub docker: DockerStatusDto,
+    pub counts: CountsDto,
+    pub collectors: CollectorsDto,
+}
+
 /// Collector health as reported by `/status`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CollectorStatusDto {
@@ -417,6 +529,34 @@ mod tests {
     fn pre_epoch_times_do_not_panic() {
         let t = UNIX_EPOCH - Duration::from_secs(10);
         assert_eq!(rfc3339(t), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn parses_what_it_formats() {
+        for secs in [0u64, 1_700_000_000, 2_000_000_000] {
+            let t = UNIX_EPOCH + Duration::from_secs(secs);
+            assert_eq!(parse_rfc3339(&rfc3339(t)), Some(t));
+        }
+    }
+
+    #[test]
+    fn parses_fractional_seconds_by_truncating() {
+        let t = parse_rfc3339("2023-11-14T22:13:20.482Z").expect("parses");
+        assert_eq!(rfc3339(t), "2023-11-14T22:13:20Z");
+    }
+
+    #[test]
+    fn rejects_anything_that_is_not_utc_rfc3339() {
+        for bad in [
+            "2023-11-14",
+            "2023-11-14T22:13:20+01:00",
+            "2023-13-14T22:13:20Z",
+            "2023-11-14T25:13:20Z",
+            "yesterday",
+            "",
+        ] {
+            assert!(parse_rfc3339(bad).is_none(), "{bad} must not parse");
+        }
     }
 
     #[test]
