@@ -25,6 +25,7 @@ use crate::dto::{
 };
 use crate::frames::ServerFrame;
 use crate::snapshot::{CollectorTiming, TickResult};
+use devpulse_events::warnings::{WarningEngine, WarningInput};
 
 /// Events kept in memory for the `/api/v1/events` endpoint. SQLite is the
 /// durable store (Milestone 5); this ring only has to cover what a dashboard
@@ -50,6 +51,8 @@ pub struct RuntimeView {
     pub resources: ResourceHistory,
     pub process_collector: CollectorTiming,
     pub socket_collector: CollectorTiming,
+    /// `None` when the daemon is not inspecting Docker at all.
+    pub container_collector: Option<CollectorTiming>,
     /// `None` until the first tick completes.
     pub last_tick: Option<SystemTime>,
 }
@@ -229,6 +232,30 @@ pub fn event_service(event: &DevPulseEvent) -> Option<&ServiceId> {
     }
 }
 
+/// One tick's worth of new truth, handed to [`AppState::apply_tick`].
+///
+/// A struct rather than seven positional arguments: the call site is the
+/// daemon's main loop and it should read like a description of what happened.
+pub struct TickUpdate<'a> {
+    pub tick: &'a TickResult,
+    pub projects: &'a BTreeMap<ProjectId, Project>,
+    pub services: Vec<Service>,
+    pub connections: Vec<Connection>,
+    pub events: Vec<DevPulseEvent>,
+    /// `None` skips warning evaluation entirely, which is what a test that is
+    /// asserting about frames wants.
+    pub warnings: Option<&'a mut WarningEngine>,
+}
+
+/// What applying a tick produced.
+#[derive(Debug, Default)]
+pub struct AppliedTick {
+    /// Serialised frames, ready to broadcast.
+    pub frames: Vec<Arc<str>>,
+    /// Every currently active warning, for persistence.
+    pub warnings: Vec<Warning>,
+}
+
 /// Everything an API handler needs. Cloned freely: it is an `Arc` inside.
 #[derive(Clone)]
 pub struct AppState(Arc<Inner>);
@@ -310,6 +337,7 @@ impl AppState {
             collectors: CollectorsDto {
                 process: collector_dto(&view.process_collector),
                 socket: collector_dto(&view.socket_collector),
+                container: view.container_collector.as_ref().map(collector_dto),
             },
         }
     }
@@ -321,15 +349,18 @@ impl AppState {
     ///
     /// Broadcasting is left to the caller so the write lock is never held
     /// across a send.
-    pub async fn apply_tick(
-        &self,
-        tick: &TickResult,
-        projects: &BTreeMap<ProjectId, Project>,
-        services: Vec<Service>,
-        connections: Vec<Connection>,
-        events: Vec<DevPulseEvent>,
-    ) -> Vec<Arc<str>> {
-        let at = rfc3339(tick.at.unwrap_or_else(SystemTime::now));
+    pub async fn apply_tick(&self, update: TickUpdate<'_>) -> AppliedTick {
+        let TickUpdate {
+            tick,
+            projects,
+            services,
+            connections,
+            events,
+            warnings,
+        } = update;
+
+        let now = tick.at.unwrap_or_else(SystemTime::now);
+        let at = rfc3339(now);
         let mut view = self.0.view.write().await;
 
         // Removed edges are resolved against the *old* topology, while it is
@@ -348,6 +379,7 @@ impl AppState {
         view.last_tick = tick.at;
         view.process_collector = tick.process.clone();
         view.socket_collector = tick.socket.clone();
+        view.container_collector = tick.container.clone();
 
         for (service, sample) in &tick.samples {
             view.resources.record(service, *sample);
@@ -412,13 +444,64 @@ impl AppState {
 
         if !events.is_empty() {
             frames.push(ServerFrame::Events {
-                at,
+                at: at.clone(),
                 events: events.iter().map(Into::into).collect(),
             });
         }
 
+        // Warnings are evaluated here because this is where the inputs are:
+        // the services as of this tick, their resource history, and the event
+        // ring the rules read back over.
+        let mut current_warnings = Vec::new();
+        if let Some(engine) = warnings {
+            let history: BTreeMap<ServiceId, Vec<devpulse_core::model::ResourceSample>> = view
+                .services
+                .keys()
+                .map(|id| (id.clone(), view.resources.history(id)))
+                .collect();
+            let recent: Vec<DevPulseEvent> = view.events.iter().cloned().collect();
+            let services: Vec<Service> = view.services.values().cloned().collect();
+
+            let delta = engine.evaluate(
+                WarningInput {
+                    services: &services,
+                    history: &history,
+                    events: &recent,
+                },
+                now,
+            );
+
+            if !delta.is_empty() {
+                frames.push(ServerFrame::WarningsChanged {
+                    at,
+                    warnings: delta.added.iter().map(WarningDto::from).collect(),
+                    removed: delta.removed.clone(),
+                });
+            }
+            view.warnings = delta.current.clone();
+            current_warnings = delta.current;
+        }
+
         drop(view);
-        frames.iter().filter_map(|f| self.encode(f)).collect()
+        AppliedTick {
+            frames: frames.iter().filter_map(|f| self.encode(f)).collect(),
+            warnings: current_warnings,
+        }
+    }
+
+    /// Seed the view from persisted history at startup (task T5.1).
+    ///
+    /// Only history is restored — projects, past events and warnings. Services
+    /// are not: a stored service carries the PIDs and ports it had when the
+    /// daemon stopped, and a PID is a lie the moment the process exits
+    /// (`AGENTS.md` rule 5). The registry rebuilds them on the first tick.
+    pub async fn restore(&self, history: crate::persistence::RestoredHistory) {
+        let mut view = self.0.view.write().await;
+        view.projects = history.projects;
+        view.warnings = history.warnings;
+        for event in history.events {
+            view.push_event(event);
+        }
     }
 
     /// The one frame every client gets on connect.
@@ -474,6 +557,7 @@ fn collector_dto(timing: &CollectorTiming) -> CollectorStatusDto {
         last_run: timing.last_run.map(rfc3339),
         degraded_fields: timing.degraded_fields.clone(),
         sockets_without_owner: timing.sockets_without_owner,
+        error: timing.error.clone(),
     }
 }
 
@@ -495,7 +579,7 @@ mod tests {
             project_id: Some(ProjectId::derived("/tmp/one")),
             kind: EventKind::ServiceStarted {
                 service_id: ServiceId::derived(service),
-                pid: 1,
+                pid: Some(1),
             },
         }
     }

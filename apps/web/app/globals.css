@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/*
+ * One neutral surface, one accent, and health colours that carry meaning.
+ * Anything that looks like a status here must come from the daemon, never from
+ * a guess made in the browser.
+ *
+ * Tokens use light-dark() so they follow `color-scheme`. Nesting `@theme`
+ * inside a prefers-color-scheme media query is ignored by Tailwind v4, which
+ * left the dashboard on the wrong surface with unreadable contrast.
+ */
+@theme {
+  --color-surface: light-dark(oklch(99% 0 0), oklch(17% 0.008 260));
+  --color-surface-raised: light-dark(oklch(100% 0 0), oklch(21% 0.008 260));
+  --color-line: light-dark(oklch(92% 0.004 260), oklch(30% 0.01 260));
+}
+
+html,
+body {
+  height: 100%;
+  color-scheme: light dark;
+}
+
+body {
+  background: var(--color-surface);
+  font-feature-settings: "cv05", "ss01";
+}
+
+/* A live value that just changed should catch the eye once, not pulse forever. */
+@keyframes devpulse-flash {
+  from {
+    background-color: color-mix(in oklch, currentColor 12%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+.devpulse-flash {
+  animation: devpulse-flash 900ms ease-out;
+}

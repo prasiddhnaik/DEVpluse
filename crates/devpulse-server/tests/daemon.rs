@@ -23,6 +23,11 @@ fn config(bind: &str) -> DaemonConfig {
         // Probing Docker would make the test depend on whether the machine
         // has a daemon; T6.1 covers that separately.
         probe_docker: false,
+        // Never touch the developer's real database from a test.
+        database: None,
+        // The watcher is exercised by its own tests; a daemon test should not
+        // depend on what the machine's filesystem does while it runs.
+        watch_files: false,
         ..DaemonConfig::default()
     }
 }

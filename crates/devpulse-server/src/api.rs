@@ -4,6 +4,8 @@
 //! a command, or anything else that could turn the daemon into a file reader or
 //! an executor (`DECISIONS.md` D004, `docs/api-contract.md`).
 
+use std::time::Duration;
+
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -11,18 +13,23 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, middleware};
 use devpulse_core::ids::{ProjectId, ServiceId};
+use devpulse_events::correlation::{self, CONTEXT_WINDOW};
 use serde::Deserialize;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use crate::dto::{
-    ApiErrorDto, ConnectionDto, EventDto, GraphDto, GraphNodeDto, ProjectDetailDto,
-    ProjectSummaryDto, ServiceConnectionsDto, ServiceDetailDto, StatusDto, WarningDto,
-    parse_rfc3339,
+    ApiErrorDto, ConnectionDto, EventContextDto, EventDto, GraphDto, GraphNodeDto,
+    ProjectDetailDto, ProjectSummaryDto, RelatedEventDto, ServiceConnectionsDto, ServiceDetailDto,
+    StatusDto, WarningDto, parse_rfc3339,
 };
 use crate::security::OriginPolicy;
 use crate::state::{AppState, DEFAULT_EVENT_LIMIT, EventFilter, MAX_EVENT_LIMIT, RuntimeView};
 use crate::ws;
+
+/// Longest context window a caller may ask for. Beyond this, "around this
+/// event" stops meaning anything.
+const MAX_CONTEXT_WINDOW: Duration = Duration::from_secs(600);
 
 /// Events attached to a project detail response.
 const PROJECT_EVENT_LIMIT: usize = 100;
@@ -48,6 +55,8 @@ pub fn router(state: AppState, policy: OriginPolicy) -> Router {
         .route("/api/v1/services/{id}", get(service))
         .route("/api/v1/graph/{project_id}", get(graph))
         .route("/api/v1/events", get(events))
+        .route("/api/v1/events/{id}/context", get(event_context))
+        .route("/api/v1/warnings", get(warnings))
         .route("/ws/v1", get(ws::upgrade))
         .layer(middleware::from_fn_with_state(policy, enforce_origin))
         .layer(cors)
@@ -199,6 +208,76 @@ async fn events(
 
     let view = state.view().await;
     Ok(Json(recent_events(&view, filter)))
+}
+
+#[derive(Debug, Deserialize)]
+struct ContextQuery {
+    window_ms: Option<u64>,
+}
+
+/// `GET /api/v1/events/:id/context` — what happened around one event (T7.4).
+async fn event_context(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<ContextQuery>,
+) -> Result<Json<EventContextDto>, ApiError> {
+    let window = Duration::from_millis(
+        query
+            .window_ms
+            .unwrap_or(CONTEXT_WINDOW.as_millis() as u64)
+            .clamp(1_000, MAX_CONTEXT_WINDOW.as_millis() as u64),
+    );
+
+    let view = state.view().await;
+    let anchor = view
+        .events
+        .iter()
+        .find(|event| event.id.as_str() == id)
+        .ok_or_else(|| ApiError::not_found(format!("unknown event {id}")))?;
+
+    // The ring is the corpus: the context of an event is what the daemon saw
+    // around it, and it saw it in this window.
+    let all: Vec<_> = view.events.iter().cloned().collect();
+    let context = correlation::context(&all, anchor, window);
+
+    Ok(Json(EventContextDto {
+        event: EventDto::from(&context.anchor),
+        window_ms: window.as_millis() as u64,
+        before: context.before.iter().map(related_dto).collect(),
+        after: context.after.iter().map(related_dto).collect(),
+    }))
+}
+
+fn related_dto(related: &correlation::RelatedEvent) -> RelatedEventDto {
+    RelatedEventDto {
+        event: EventDto::from(&related.event),
+        relation: match related.relation {
+            correlation::Relation::SameService => "same_service",
+            correlation::Relation::SameProject => "same_project",
+            correlation::Relation::PrecedingFileChange => "preceding_file_change",
+            correlation::Relation::Temporal => "temporal",
+        }
+        .to_string(),
+        offset_ms: related.offset_ms,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct WarningsQuery {
+    project_id: Option<String>,
+}
+
+/// `GET /api/v1/warnings` — every active warning, newest activity first.
+async fn warnings(
+    State(state): State<AppState>,
+    Query(query): Query<WarningsQuery>,
+) -> Json<Vec<WarningDto>> {
+    let view = state.view().await;
+    let warnings = match query.project_id.map(ProjectId::from_stored) {
+        Some(project) => view.warnings_of(&project),
+        None => view.warnings.iter().collect(),
+    };
+    Json(warnings.into_iter().map(WarningDto::from).collect())
 }
 
 fn recent_events(view: &RuntimeView, filter: EventFilter) -> Vec<EventDto> {

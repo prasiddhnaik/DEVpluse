@@ -3,6 +3,9 @@
 //! Consumes the deltas produced by the registry ([`RegistryDelta`]) and the
 //! [`TopologyBuilder`] and turns them into durable [`DevPulseEvent`]s.
 
+pub mod correlation;
+pub mod warnings;
+
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -24,7 +27,8 @@ pub struct EventDeriver {
 #[derive(Debug, Clone)]
 struct StopInfo {
     at: SystemTime,
-    pid: u32,
+    /// `None` for a container, which has no host PID.
+    pid: Option<u32>,
 }
 
 impl EventDeriver {
@@ -227,6 +231,27 @@ impl EventDeriver {
         }
     }
 
+    /// A file changed under a watched project root (task T7.1).
+    ///
+    /// The deriver mints it so that every event in the timeline comes from one
+    /// id sequence and orders correctly against the events around it.
+    pub fn file_changed(
+        &mut self,
+        project_id: &ProjectId,
+        path: std::path::PathBuf,
+        at: SystemTime,
+    ) -> DevPulseEvent {
+        DevPulseEvent {
+            id: self.next_id(at),
+            at,
+            project_id: Some(project_id.clone()),
+            kind: EventKind::FileChanged {
+                project_id: project_id.clone(),
+                path,
+            },
+        }
+    }
+
     fn next_id(&mut self, at: SystemTime) -> EventId {
         self.sequence = self.sequence.wrapping_add(1);
         EventId::new(millis(at), self.sequence)
@@ -257,13 +282,13 @@ mod tests {
         let id = sid();
 
         let stop = RegistryDelta {
-            stopped: vec![(id.clone(), 100)],
+            stopped: vec![(id.clone(), Some(100))],
             ..RegistryDelta::default()
         };
         deriver.derive(&stop, &TopologyDelta::default(), at(0));
 
         let start = RegistryDelta {
-            started: vec![(id.clone(), 101)],
+            started: vec![(id.clone(), Some(101))],
             ..RegistryDelta::default()
         };
         let events = deriver.derive(&start, &TopologyDelta::default(), at(1));
@@ -272,8 +297,8 @@ mod tests {
         assert!(matches!(
             &events[0].kind,
             EventKind::ServiceRestarted {
-                old_pid: 100,
-                new_pid: 101,
+                old_pid: Some(100),
+                new_pid: Some(101),
                 ..
             }
         ));
@@ -285,7 +310,7 @@ mod tests {
         let id = sid();
 
         let stop = RegistryDelta {
-            stopped: vec![(id.clone(), 100)],
+            stopped: vec![(id.clone(), Some(100))],
             ..RegistryDelta::default()
         };
 
@@ -294,7 +319,7 @@ mod tests {
         events.extend(deriver.derive(&RegistryDelta::default(), &TopologyDelta::default(), at(10)));
 
         let start = RegistryDelta {
-            started: vec![(id.clone(), 101)],
+            started: vec![(id.clone(), Some(101))],
             ..RegistryDelta::default()
         };
         events.extend(deriver.derive(&start, &TopologyDelta::default(), at(11)));
@@ -302,11 +327,11 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(
             &events[0].kind,
-            EventKind::ServiceStopped { pid: 100, .. }
+            EventKind::ServiceStopped { pid: Some(100), .. }
         ));
         assert!(matches!(
             &events[1].kind,
-            EventKind::ServiceStarted { pid: 101, .. }
+            EventKind::ServiceStarted { pid: Some(101), .. }
         ));
     }
 
@@ -315,7 +340,7 @@ mod tests {
         let mut deriver = EventDeriver::new();
         let id = sid();
         let delta = RegistryDelta {
-            restarted: vec![(id.clone(), 200, 201)],
+            restarted: vec![(id.clone(), Some(200), Some(201))],
             ..RegistryDelta::default()
         };
 
@@ -324,8 +349,8 @@ mod tests {
         assert!(matches!(
             &events[0].kind,
             EventKind::ServiceRestarted {
-                old_pid: 200,
-                new_pid: 201,
+                old_pid: Some(200),
+                new_pid: Some(201),
                 ..
             }
         ));

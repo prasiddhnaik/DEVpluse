@@ -26,7 +26,8 @@ use devpulse_core::topology::{ObservedConnectionEndpoints, TopologyBuilder, Topo
 use devpulse_discovery::error::CollectorError;
 use devpulse_discovery::process::{ProcessCollector, SysinfoProcessCollector};
 use devpulse_discovery::socket::{Netstat2SocketCollector, SocketCollector};
-use tracing::debug;
+use devpulse_docker::collector::ContainerCollector;
+use tracing::{debug, warn};
 
 /// Default polling interval: 1 second (`TASKS.md`).
 pub const DEFAULT_TICK_INTERVAL: Duration = Duration::from_secs(1);
@@ -60,6 +61,9 @@ pub struct CollectorTiming {
     pub degraded_fields: BTreeMap<String, usize>,
     /// Socket collector only: sockets the OS would not attribute to a PID.
     pub sockets_without_owner: Option<usize>,
+    /// Container collector only: why the last collection produced nothing.
+    /// `None` means it produced something (or was never asked).
+    pub error: Option<String>,
 }
 
 /// Result of one snapshot tick.
@@ -75,6 +79,8 @@ pub struct TickResult {
     pub collector_duration_ms: u64,
     pub process: CollectorTiming,
     pub socket: CollectorTiming,
+    /// `None` when the daemon has no Docker collector at all.
+    pub container: Option<CollectorTiming>,
 }
 
 /// The snapshot loop engine.
@@ -86,6 +92,9 @@ pub struct SnapshotLoop {
     socket_collector: Netstat2SocketCollector,
     _project_resolver: ProjectResolver,
     grouping_engine: GroupingEngine,
+    /// Present only when a Docker daemon answered a ping at startup
+    /// (`DockerAvailability::detect`). Absent is a supported, normal state.
+    container_collector: Option<Box<dyn ContainerCollector>>,
     registry: ServiceRegistry,
     topology_builder: TopologyBuilder,
     /// Projects seen on the most recent tick. The grouping engine is
@@ -104,10 +113,22 @@ impl SnapshotLoop {
             socket_collector: Netstat2SocketCollector::new(),
             _project_resolver: project_resolver,
             grouping_engine,
+            container_collector: None,
             registry: ServiceRegistry::new(),
             topology_builder: TopologyBuilder::new(),
             projects: BTreeMap::new(),
         }
+    }
+
+    /// Add Docker inspection. Without this the loop reports host processes
+    /// only, which is what happens on a machine with no Docker.
+    pub fn with_containers(mut self, collector: Box<dyn ContainerCollector>) -> Self {
+        self.container_collector = Some(collector);
+        self
+    }
+
+    pub fn inspects_containers(&self) -> bool {
+        self.container_collector.is_some()
     }
 
     /// Run one tick of the snapshot loop.
@@ -120,9 +141,18 @@ impl SnapshotLoop {
         let start = std::time::Instant::now();
 
         // 1. Collect (async collectors handle their own spawn_blocking).
-        let (process_snapshot, socket_snapshot) = tokio::join!(
+        // Docker runs alongside the OS collectors rather than after them: it is
+        // an HTTP round trip and there is no reason to pay for it serially.
+        let container_future = async {
+            match &self.container_collector {
+                None => None,
+                Some(collector) => Some(collector.snapshot().await),
+            }
+        };
+        let (process_snapshot, socket_snapshot, container_result) = tokio::join!(
             self.process_collector.snapshot(),
             self.socket_collector.snapshot(),
+            container_future,
         );
 
         let process_snapshot = process_snapshot.map_err(|e| SnapshotError::CollectionFailed {
@@ -135,12 +165,28 @@ impl SnapshotLoop {
             source: e,
         })?;
 
+        // Docker failing is not the daemon failing: a daemon that was stopped
+        // between ticks must degrade to host processes, not stop the loop
+        // (`AGENTS.md` rule 3).
+        let (container_snapshot, container_error) = match container_result {
+            None => (None, None),
+            Some(Ok(snapshot)) => (Some(snapshot), None),
+            Some(Err(error)) => {
+                warn!(%error, "container collection failed; continuing without containers");
+                (None, Some(error.to_string()))
+            }
+        };
+
         let collector_duration_ms = start.elapsed().as_millis() as u64;
 
         debug!(
             duration_ms = collector_duration_ms,
             processes = process_snapshot.processes.len(),
             sockets = socket_snapshot.sockets.len(),
+            containers = container_snapshot
+                .as_ref()
+                .map(|s| s.containers.len())
+                .unwrap_or_default(),
             "snapshot collected"
         );
 
@@ -152,7 +198,7 @@ impl SnapshotLoop {
                 pid: p.pid,
                 parent_pid: p.parent_pid,
                 cwd: p.cwd.clone(),
-                container: None, // TODO: add Docker when Milestone 6 is done
+                container: None,
             })
             .collect();
 
@@ -192,6 +238,18 @@ impl SnapshotLoop {
                 })
                 .collect();
 
+            // A shell, a `sleep`, or the `git` a script just ran is a process
+            // in a project directory, not a service. Left in, a short-lived
+            // system tool that runs repeatedly reads as a service in a restart
+            // loop (`service_filter`).
+            if !devpulse_core::service_filter::is_service_process(
+                process.executable.as_deref(),
+                !endpoints.is_empty(),
+                Some(Duration::from_secs(process.run_time_secs)),
+            ) {
+                continue;
+            }
+
             let primary_port = endpoints.iter().map(|e| e.port).min();
 
             // Rebuild fingerprint with the primary port.
@@ -217,7 +275,7 @@ impl SnapshotLoop {
                 project_id,
                 kind: ServiceKind::HostProcess,
                 runtime,
-                instance: ProcessInstance {
+                instance: Some(ProcessInstance {
                     pid: process.pid,
                     parent_pid: process.parent_pid,
                     executable: process.executable.clone(),
@@ -226,9 +284,36 @@ impl SnapshotLoop {
                     started_at_epoch_secs: process.start_time_epoch_secs,
                     cpu_percent: process.cpu_percent,
                     memory_bytes: process.memory_bytes,
-                },
+                }),
                 endpoints,
             });
+        }
+
+        // 3b. Group and convert containers. Grouping runs as its own batch:
+        // a container has no PID, so the `pid` field is only a row key here,
+        // and mixing the batches would let a container collide with a process.
+        if let Some(containers) = &container_snapshot {
+            let running: Vec<_> = containers.running().collect();
+            let container_inputs: Vec<GroupingInput> = running
+                .iter()
+                .enumerate()
+                .map(|(row, container)| GroupingInput {
+                    pid: row as u32,
+                    parent_pid: None,
+                    cwd: None,
+                    container: Some(container.identity.clone()),
+                })
+                .collect();
+
+            let container_grouping = self.grouping_engine.group(&container_inputs, at);
+            self.remember_projects(&container_grouping.projects);
+
+            for (row, container) in running.iter().enumerate() {
+                let project_id = container_grouping
+                    .membership_for(row as u32)
+                    .map(|m| m.project_id.clone());
+                observations.push(container.to_observation(project_id));
+            }
         }
 
         // 4. Reconcile with the registry.
@@ -286,13 +371,25 @@ impl SnapshotLoop {
                 last_run: Some(process_snapshot.captured_at),
                 degraded_fields: degraded_fields(&process_snapshot.degradations),
                 sockets_without_owner: None,
+                error: None,
             },
             socket: CollectorTiming {
                 duration_ms: socket_snapshot.duration.as_millis() as u64,
                 last_run: Some(socket_snapshot.captured_at),
                 degraded_fields: BTreeMap::new(),
                 sockets_without_owner: Some(socket_snapshot.sockets_without_owner),
+                error: None,
             },
+            container: self.container_collector.as_ref().map(|_| CollectorTiming {
+                duration_ms: container_snapshot
+                    .as_ref()
+                    .map(|s| s.duration.as_millis() as u64)
+                    .unwrap_or_default(),
+                last_run: container_snapshot.as_ref().map(|s| s.captured_at),
+                degraded_fields: BTreeMap::new(),
+                sockets_without_owner: None,
+                error: container_error,
+            }),
         })
     }
 

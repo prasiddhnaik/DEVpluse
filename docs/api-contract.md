@@ -219,22 +219,75 @@ Rules:
 - Frames are JSON text, one JSON value per frame.
 - The `Origin` header is checked against the CORS allow-list before upgrade.
 
-## Implementation status (Milestone 3)
+## `GET /api/v1/warnings`
+
+Every currently active warning, newest activity first. Optional `project_id`
+filter. Warnings come from the deterministic rules in `devpulse-events`
+(`TASKS.md` T7.3) and clear as soon as their condition stops being true.
+
+```jsonc
+[
+  {
+    "id": "warn_restart_loop_svc_1122aabbccdd",
+    "rule": "restart_loop",          // restart_loop | cpu_spike | memory_growth | health_failure | port_conflict
+    "severity": "critical",          // info | warning | critical
+    "project_id": "prj_ab12cd34ef56",
+    "service_id": "svc_1122aabbccdd",
+    "message": "web restarted 3 times in the last 60s",
+    "first_seen": "2026-08-17T10:02:35Z",
+    "last_seen":  "2026-08-17T10:03:35Z",
+    "related_events": ["evt_0193f2a1b3c8000001"]
+  }
+]
+```
+
+`port_conflict` has no `service_id`: a conflict is about the port, and blaming
+one of its two claimants would be a guess.
+
+## `GET /api/v1/events/:id/context`
+
+What happened around one event (`TASKS.md` T7.4). Optional `window_ms`
+(default 30000, clamped to `1000..=600000`).
+
+```jsonc
+{
+  "event": { /* Event */ },
+  "window_ms": 30000,
+  "before": [
+    {
+      "id": "evt_…", "at": "…", "project_id": "prj_…", "kind": { "type": "file_changed", … },
+      "relation": "preceding_file_change",  // same_service | same_project | preceding_file_change | temporal
+      "offset_ms": -2000                    // negative is before the anchor
+    }
+  ],
+  "after": [ /* same shape, offset_ms positive */ ]
+}
+```
+
+`relation` says why two events are near each other. It is never "caused by":
+DevPulse reports ordering and lets the developer draw the conclusion
+(`DECISIONS.md` D008).
+
+`404` with `code: "not_found"` when the event has fallen out of the daemon's
+in-memory ring.
+
+## Implementation status (0.1)
 
 The routes above are served by `devpulse-server` and exercised by
-`crates/devpulse-server/tests/{api,websocket,daemon}.rs`. Where the running
-daemon is narrower than this document, it is narrower on purpose:
+`crates/devpulse-server/tests/`. Where the running daemon is narrower than this
+document, it is narrower on purpose:
 
 | Area | Status |
 | --- | --- |
-| `warnings` (everywhere it appears) | Always `[]`, and `recent_warning` is always `null`. The warning rules are Milestone 7; the fields exist now so the shape does not change later. |
-| `docker` in `/status` | Probed once at startup. `devpulse serve --no-docker` reports `{"available": false, "reason": "not probed"}`. Container services are not yet folded into the graph (Milestone 6 wiring). |
-| `topology_changed.project_id` | Nullable. An edge whose source process could not be grouped is still reported, with `project_id: null`, rather than being dropped. |
-| Disallowed `Origin` | `403` with body `{"error":{"code":"bad_request", …}}`. The daemon refuses to answer at all rather than relying on the browser to discard the response. |
+| `/status` `collectors.container` | Present only when the daemon has a Docker collector. Its `error` field says why a collection produced nothing. |
+| Container services | Included in the registry, the graph and the events, identified by Compose labels. Their `instances` are always empty and event `pid`s are `null`: Docker does not disclose the host PIDs of a container's processes. |
+| Container-to-container edges | Not drawn. Sharing a Docker network is not evidence that two containers talk, and inventing an edge would break `AGENTS.md` rule 4. Host-to-container edges appear normally, through published ports. |
+| `warnings` | Live. Empty until a rule fires. |
+| Event history | The in-memory ring holds the newest 2000 events and is restored from SQLite at startup. Older history stays in the database and is subject to retention (24h / 50k events by default). |
+| Persisted services | Written, but never restored into the live view: a stored service carries PIDs that were true before the daemon stopped (`AGENTS.md` rule 5). |
+| Disallowed `Origin` | `403` with body `{"error":{"code":"bad_request", …}}`. The daemon refuses to answer rather than relying on the browser to discard the response. |
 | `limit` on `/api/v1/events` | Clamped to `1..=1000` rather than rejected. |
 | `since` on `/api/v1/events` | UTC RFC 3339 only (`…Z`, fractional seconds truncated). An offset such as `+01:00` is a `bad_request`. |
-| Event history | The in-memory ring holds the newest 2000 events. SQLite retention (Milestone 5) is not wired into the daemon yet. |
-| `/api/v1/projects/:id` `recent_events` | Capped at 100; `/api/v1/services/:id` at 50, as documented. |
 
 Frames are broadcast to a bounded channel (256). A client that falls behind is
 closed rather than buffered, and is expected to reconnect and re-snapshot.

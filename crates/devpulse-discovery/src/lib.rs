@@ -18,6 +18,7 @@ pub mod error;
 pub mod platform;
 pub mod process;
 pub mod socket;
+pub mod watcher;
 
 pub use error::CollectorError;
 pub use platform::{PlatformCapabilities, Support, capabilities};
@@ -28,3 +29,4 @@ pub use process::{
 pub use socket::{
     Netstat2SocketCollector, ObservedSocket, Protocol, SocketCollector, SocketSnapshot, SocketState,
 };
+pub use watcher::{FileChange, MAX_WATCHED_ROOTS, ProjectWatcher};

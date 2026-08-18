@@ -396,8 +396,10 @@ dependencies = [
  "async-trait",
  "devpulse-core",
  "netstat2",
+ "notify",
  "serde",
  "sysinfo",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -442,7 +444,9 @@ name = "devpulse-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
+ "bollard",
  "devpulse-core",
  "devpulse-discovery",
  "devpulse-docker",

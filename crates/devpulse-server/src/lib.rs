@@ -4,6 +4,7 @@ pub mod api;
 pub mod daemon;
 pub mod dto;
 pub mod frames;
+pub mod persistence;
 pub mod security;
 pub mod snapshot;
 pub mod state;

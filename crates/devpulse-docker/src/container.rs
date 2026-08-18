@@ -14,7 +14,7 @@ use bollard::models::{
 };
 use devpulse_core::{
     ContainerIdentity, Endpoint, Health, ProjectId, Protocol, Runtime, Service, ServiceFingerprint,
-    ServiceKind,
+    ServiceKind, ServiceObservation,
 };
 use serde::Serialize;
 
@@ -309,6 +309,34 @@ impl ObservedContainer {
             // The registry owns restart counting; a single observation cannot
             // know about restarts.
             restart_count: 0,
+        }
+    }
+}
+
+/// The registry's view of a container, so that containers and host processes
+/// reconcile through one code path (`TASKS.md` T6.3) rather than two.
+///
+/// `instance` is `None` for the same reason [`ObservedContainer::to_service`]
+/// leaves `instances` empty: Docker does not disclose the host PIDs of the
+/// processes inside a container.
+impl ObservedContainer {
+    pub fn to_observation(&self, project_id: Option<ProjectId>) -> ServiceObservation {
+        ServiceObservation {
+            fingerprint: ServiceFingerprint::container(&self.identity),
+            name: self
+                .identity
+                .compose_service
+                .clone()
+                .unwrap_or_else(|| self.identity.name.clone()),
+            project_id,
+            kind: ServiceKind::Container(self.identity.clone()),
+            runtime: Runtime::Container,
+            instance: None,
+            endpoints: self
+                .ports
+                .iter()
+                .filter_map(ContainerPort::endpoint)
+                .collect(),
         }
     }
 }

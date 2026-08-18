@@ -9,9 +9,10 @@
 //!   server is down", not "my API server vanished", so a stopped service is
 //!   retained with its `first_seen` and `restart_count`. Its `instances` and
 //!   `endpoints` are cleared, because those describe a process that is gone.
-//! * **Retention is bounded.** At most [`MAX_STOPPED_SERVICES`] stopped services
-//!   are kept; beyond that the least recently seen are dropped. Nothing in this
-//!   module grows with uptime (`AGENTS.md` rule 7).
+//! * **Retention is bounded.** Stopped listeners (and containers) are kept up
+//!   to [`MAX_STOPPED_SERVICES`]; a stopped host process that never listened
+//!   is dropped after [`STOPPED_PORTLESS_RETENTION`]. Nothing in this module
+//!   grows with uptime (`AGENTS.md` rule 7).
 //!
 //! # What counts as a restart
 //!
@@ -46,6 +47,20 @@ use crate::model::{Endpoint, Health, ProcessInstance, Protocol, Service, Service
 /// a hard bound.
 pub const MAX_STOPPED_SERVICES: usize = 256;
 
+/// How long a stopped host process that never listened is kept.
+///
+/// A listener that dies is "my API is down" and belongs in the listing. A
+/// portless worker that dies is usually a one-shot: a test binary, a helper,
+/// a script that lived just long enough to pass [`crate::service_filter::MIN_PORTLESS_LIFETIME`].
+/// Keeping those for the full [`MAX_STOPPED_SERVICES`] cap is how a project
+/// card ends up reading `9/68`.
+///
+/// The window is longer than [`RESTART_LOOP_WINDOW`] so a crashing worker is
+/// still seen as a restart loop rather than a new service every time. After
+/// that, it is gone. Containers are never aged out this way: a container with
+/// no published port is still "my postgres is down".
+pub const STOPPED_PORTLESS_RETENTION: Duration = Duration::from_secs(90);
+
 /// Window in which repeated restarts mean "restart loop" rather than "I
 /// restarted my dev server".
 pub const RESTART_LOOP_WINDOW: Duration = Duration::from_secs(60);
@@ -67,7 +82,10 @@ pub struct ServiceObservation {
     pub project_id: Option<ProjectId>,
     pub kind: ServiceKind,
     pub runtime: Runtime,
-    pub instance: ProcessInstance,
+    /// `None` for a container: Docker does not disclose the host PIDs of the
+    /// processes inside it, so there is no honest instance to report. Liveness
+    /// for those comes from the observation existing at all.
+    pub instance: Option<ProcessInstance>,
     pub endpoints: Vec<Endpoint>,
 }
 
@@ -77,12 +95,13 @@ pub struct ServiceObservation {
 /// produce an identical delta; the event deriver and the tests depend on that.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RegistryDelta {
-    /// Service is running and was not running before. Carries the primary PID.
-    pub started: Vec<(ServiceId, u32)>,
+    /// Service is running and was not running before. Carries the primary PID,
+    /// or `None` for a container.
+    pub started: Vec<(ServiceId, Option<u32>)>,
     /// Service is no longer observed. Carries the PID it last ran as.
-    pub stopped: Vec<(ServiceId, u32)>,
+    pub stopped: Vec<(ServiceId, Option<u32>)>,
     /// Same service, entirely new PID set: `(service, old_pid, new_pid)`.
-    pub restarted: Vec<(ServiceId, u32, u32)>,
+    pub restarted: Vec<(ServiceId, Option<u32>, Option<u32>)>,
     pub ports_opened: Vec<(ServiceId, u16)>,
     pub ports_closed: Vec<(ServiceId, u16)>,
     pub health_changed: Vec<(ServiceId, Health, Health)>,
@@ -132,9 +151,19 @@ struct Entered {
     /// [`RESTART_LOOP_THRESHOLD`] entries — exactly what the loop test needs
     /// and nothing more, so this cannot grow.
     restarts: VecDeque<SystemTime>,
+    /// Whether this service has ever owned a listening port. Endpoints are
+    /// cleared on stop, so this flag is the only honest record that it was
+    /// a listener — and therefore worth keeping as "my API is down".
+    ever_listened: bool,
 }
 
 impl Entered {
+    /// Listeners and containers stay until the hard cap; portless host
+    /// workers are aged out after [`STOPPED_PORTLESS_RETENTION`].
+    fn retain_when_stopped(&self) -> bool {
+        self.ever_listened || matches!(self.service.kind, ServiceKind::Container(_))
+    }
+
     fn record_restart(&mut self, at: SystemTime) {
         self.service.restart_count = self.service.restart_count.saturating_add(1);
         if self.restarts.len() == RESTART_LOOP_THRESHOLD {
@@ -211,9 +240,11 @@ impl ServiceRegistry {
                         delta.ports_opened.push((id.clone(), *port));
                     }
                     delta.started.push((id.clone(), merged.primary_pid));
+                    let ever_listened = !merged.ports.is_empty();
                     slot.insert(Entered {
                         service: merged.into_service(id, at),
                         restarts: VecDeque::new(),
+                        ever_listened,
                     });
                 }
                 Entry::Occupied(mut slot) => {
@@ -227,7 +258,7 @@ impl ServiceRegistry {
             if observed_ids.binary_search(id).is_ok() || !entered.service.is_running() {
                 continue;
             }
-            let pid = primary_pid(&entered.service.instances).unwrap_or_default();
+            let pid = primary_pid(&entered.service.instances);
             for endpoint in &entered.service.endpoints {
                 delta.ports_closed.push((id.clone(), endpoint.port));
             }
@@ -247,7 +278,7 @@ impl ServiceRegistry {
             delta.stopped.push((id.clone(), pid));
         }
 
-        self.evict_stopped(&mut delta);
+        self.evict_stopped(&mut delta, at);
 
         // Carry each service's project membership so event derivation and the
         // API can attach events to projects without a second lookup. Evicted
@@ -273,19 +304,25 @@ impl ServiceRegistry {
         let was_running = entered.service.is_running();
         let previous_pids = pid_set(&entered.service.instances);
         let previous_primary = primary_pid(&entered.service.instances);
+        if !merged.ports.is_empty() {
+            entered.ever_listened = true;
+        }
 
         if was_running {
             let overlaps = merged
                 .instances
                 .iter()
                 .any(|i| previous_pids.contains(&i.pid));
-            if !overlaps {
+            // A container has no instances on either side, so PID overlap says
+            // nothing about it; treating "no overlap" as a restart there would
+            // report a restart on every tick. Its restarts are seen as a
+            // stop followed by a start instead.
+            let pid_evidence = !merged.instances.is_empty() || !previous_pids.is_empty();
+            if !overlaps && pid_evidence {
                 entered.record_restart(at);
-                delta.restarted.push((
-                    id.clone(),
-                    previous_primary.unwrap_or_default(),
-                    merged.primary_pid,
-                ));
+                delta
+                    .restarted
+                    .push((id.clone(), previous_primary, merged.primary_pid));
             }
         } else {
             // Known but stopped, now running again: it restarted between ticks.
@@ -315,9 +352,30 @@ impl ServiceRegistry {
         }
     }
 
-    /// Drop the least recently seen stopped services once retention is
-    /// exceeded. Running services are never evicted, however old they are.
-    fn evict_stopped(&mut self, delta: &mut RegistryDelta) {
+    /// Drop stopped services that no longer earn their keep.
+    ///
+    /// Portless host processes age out after [`STOPPED_PORTLESS_RETENTION`].
+    /// Everything else — listeners and containers — is kept until the
+    /// [`MAX_STOPPED_SERVICES`] cap, then the least recently seen go. Running
+    /// services are never evicted.
+    fn evict_stopped(&mut self, delta: &mut RegistryDelta, at: SystemTime) {
+        let expired: Vec<ServiceId> = self
+            .services
+            .iter()
+            .filter(|(_, entered)| {
+                !entered.service.is_running()
+                    && !entered.retain_when_stopped()
+                    && at
+                        .duration_since(entered.service.last_seen)
+                        .is_ok_and(|age| age > STOPPED_PORTLESS_RETENTION)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in expired {
+            self.services.remove(&id);
+            delta.evicted.push(id);
+        }
+
         let stopped = self
             .services
             .values()
@@ -364,7 +422,8 @@ impl ServiceRegistry {
 /// Observations for one service, being folded together.
 struct Merged {
     /// PID that owns the display metadata, so folding is order-independent.
-    meta_pid: u32,
+    /// `None` for a container, which has exactly one observation anyway.
+    meta_pid: Option<u32>,
     name: String,
     project_id: Option<ProjectId>,
     kind: ServiceKind,
@@ -376,7 +435,7 @@ struct Merged {
 
 /// A folded, normalised observation set.
 struct Finished {
-    primary_pid: u32,
+    primary_pid: Option<u32>,
     name: String,
     project_id: Option<ProjectId>,
     kind: ServiceKind,
@@ -391,26 +450,35 @@ struct Finished {
 impl Merged {
     fn new(observation: ServiceObservation) -> Self {
         Self {
-            meta_pid: observation.instance.pid,
+            meta_pid: observation.instance.as_ref().map(|i| i.pid),
             name: observation.name,
             project_id: observation.project_id,
             kind: observation.kind,
             runtime: observation.runtime,
             fingerprint: observation.fingerprint.canonical().to_string(),
-            instances: vec![observation.instance],
+            instances: observation.instance.into_iter().collect(),
             endpoints: observation.endpoints,
         }
     }
 
     fn absorb(&mut self, observation: ServiceObservation) {
-        if observation.instance.pid < self.meta_pid {
-            self.meta_pid = observation.instance.pid;
+        // Lowest PID wins the display metadata. A pid-less observation (a
+        // container) never displaces one that has a PID; two of them cannot
+        // collide, because a container maps to exactly one fingerprint.
+        let pid = observation.instance.as_ref().map(|i| i.pid);
+        let wins = match (pid, self.meta_pid) {
+            (Some(new), Some(current)) => new < current,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if wins {
+            self.meta_pid = pid;
             self.name = observation.name;
             self.project_id = observation.project_id;
             self.kind = observation.kind;
             self.runtime = observation.runtime;
         }
-        self.instances.push(observation.instance);
+        self.instances.extend(observation.instance);
         self.endpoints.extend(observation.endpoints);
     }
 
@@ -428,7 +496,7 @@ impl Merged {
         }
 
         Finished {
-            primary_pid: primary_pid(&self.instances).unwrap_or(self.meta_pid),
+            primary_pid: primary_pid(&self.instances).or(self.meta_pid),
             name: self.name,
             project_id: self.project_id,
             kind: self.kind,
@@ -569,7 +637,7 @@ mod tests {
             project_id: None,
             kind: ServiceKind::HostProcess,
             runtime: Runtime::Node,
-            instance: instance(pid, started),
+            instance: Some(instance(pid, started)),
             endpoints: port.map(endpoint).into_iter().collect(),
         }
     }
@@ -584,7 +652,7 @@ mod tests {
 
         let delta = registry.apply(vec![obs], at(10));
 
-        assert_eq!(delta.started, vec![(id.clone(), 100)]);
+        assert_eq!(delta.started, vec![(id.clone(), Some(100))]);
         assert_eq!(delta.ports_opened, vec![(id.clone(), 3000)]);
         assert!(delta.stopped.is_empty());
         assert!(delta.restarted.is_empty());
@@ -607,7 +675,7 @@ mod tests {
         registry.apply(vec![observation("api", Some(3000), 200, 12)], at(12));
         let delta = registry.apply(vec![], at(13));
 
-        assert_eq!(delta.stopped, vec![(id.clone(), 200)]);
+        assert_eq!(delta.stopped, vec![(id.clone(), Some(200))]);
         assert_eq!(delta.ports_closed, vec![(id.clone(), 3000)]);
         assert_eq!(
             delta.health_changed,
@@ -635,7 +703,7 @@ mod tests {
         registry.apply(vec![observation("api", Some(3000), 100, 10)], at(10));
         let delta = registry.apply(vec![observation("api", Some(3000), 777, 11)], at(11));
 
-        assert_eq!(delta.restarted, vec![(id.clone(), 100, 777)]);
+        assert_eq!(delta.restarted, vec![(id.clone(), Some(100), Some(777))]);
         assert!(
             delta.started.is_empty() && delta.stopped.is_empty(),
             "an in-place restart is one event, not a stop plus a start"
@@ -660,7 +728,7 @@ mod tests {
         // Worker 101 replaced by 102; the listening primary is untouched.
         let mut replacement = observation("api", Some(3000), 102, 11);
         replacement.endpoints.clear();
-        primary.instance = instance(100, 10);
+        primary.instance = Some(instance(100, 10));
         let delta = registry.apply(vec![primary, replacement], at(11));
 
         assert!(delta.restarted.is_empty());
@@ -679,7 +747,7 @@ mod tests {
         registry.apply(vec![], at(11));
         let delta = registry.apply(vec![observation("api", Some(3000), 200, 12)], at(12));
 
-        assert_eq!(delta.started, vec![(id.clone(), 200)]);
+        assert_eq!(delta.started, vec![(id.clone(), Some(200))]);
         assert_eq!(delta.ports_opened, vec![(id.clone(), 3000)]);
         assert_eq!(
             delta.health_changed,
@@ -761,7 +829,7 @@ mod tests {
         let delta = registry.apply(vec![worker, primary], at(10));
 
         assert_eq!(registry.len(), 1);
-        assert_eq!(delta.started, vec![(id.clone(), 100)]);
+        assert_eq!(delta.started, vec![(id.clone(), Some(100))]);
         assert_eq!(
             delta.ports_opened,
             vec![(id.clone(), 3000)],
@@ -818,6 +886,74 @@ mod tests {
         assert!(
             registry.get(&ids[total - 1]).is_some(),
             "the most recently stopped service is retained"
+        );
+    }
+
+    #[test]
+    fn a_stopped_portless_worker_is_dropped_after_the_retention_window() {
+        let mut registry = ServiceRegistry::new();
+        let worker = observation("worker", None, 400, 10);
+        let id = worker.fingerprint.service_id();
+
+        registry.apply(vec![worker], at(10));
+        let just_stopped = registry.apply(vec![], at(11));
+        assert_eq!(just_stopped.stopped, vec![(id.clone(), Some(400))]);
+        assert!(
+            registry.get(&id).is_some(),
+            "a just-stopped worker must stay long enough for restart detection"
+        );
+        assert!(just_stopped.evicted.is_empty());
+
+        // last_seen is the last running observation (t=10), not the stop tick.
+        let still_inside = registry.apply(vec![], at(10 + STOPPED_PORTLESS_RETENTION.as_secs()));
+        assert!(
+            registry.get(&id).is_some(),
+            "the window is exclusive: at exactly {STOPPED_PORTLESS_RETENTION:?} of silence it is still kept"
+        );
+        assert!(still_inside.evicted.is_empty());
+
+        let aged_out = registry.apply(vec![], at(11 + STOPPED_PORTLESS_RETENTION.as_secs()));
+        assert!(
+            registry.get(&id).is_none(),
+            "a portless worker is not 'my API is down'"
+        );
+        assert_eq!(aged_out.evicted, vec![id]);
+    }
+
+    #[test]
+    fn a_stopped_listener_outlives_the_portless_window() {
+        let mut registry = ServiceRegistry::new();
+        let api = observation("api", Some(3000), 100, 10);
+        let id = api.fingerprint.service_id();
+
+        registry.apply(vec![api], at(10));
+        registry.apply(vec![], at(11));
+        registry.apply(vec![], at(11 + STOPPED_PORTLESS_RETENTION.as_secs() * 10));
+
+        let service = registry.get(&id).expect("a dead API is still the API");
+        assert_eq!(service.health, Health::Stopped);
+    }
+
+    #[test]
+    fn a_worker_that_later_listens_is_kept_when_it_stops() {
+        let mut registry = ServiceRegistry::new();
+        let mut worker = observation("worker", None, 400, 10);
+        let id = worker.fingerprint.service_id();
+
+        registry.apply(vec![worker.clone()], at(10));
+        worker.endpoints = vec![endpoint(4100)];
+        // Fingerprint includes the port, so this would normally be a new
+        // service. Force the same identity by applying through the existing
+        // id: absorb into the same observation shape the registry already
+        // knows by reusing the original fingerprint.
+        worker.fingerprint = observation("worker", None, 400, 10).fingerprint;
+        registry.apply(vec![worker], at(11));
+        registry.apply(vec![], at(12));
+        registry.apply(vec![], at(12 + STOPPED_PORTLESS_RETENTION.as_secs() * 2));
+
+        assert!(
+            registry.get(&id).is_some(),
+            "once it has listened, stopping it is an outage, not a cleanup"
         );
     }
 

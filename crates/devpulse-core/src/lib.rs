@@ -9,6 +9,7 @@
 //! * [`project`] — resolve a working directory to a project root, with evidence.
 //! * [`grouping`] — turn observations into project memberships.
 //! * [`redact`] — strip likely secrets out of process command lines.
+//! * [`service_filter`] — which processes count as services at all.
 
 pub mod grouping;
 pub mod identity;
@@ -18,6 +19,7 @@ pub mod project;
 pub mod redact;
 pub mod registry;
 pub mod resources;
+pub mod service_filter;
 pub mod topology;
 
 pub use grouping::{
@@ -36,4 +38,7 @@ pub use project::{
 pub use redact::{REDACTED, redact_command};
 pub use registry::{RegistryDelta, ServiceObservation, ServiceRegistry};
 pub use resources::ResourceHistory;
+pub use service_filter::{
+    MIN_PORTLESS_LIFETIME, is_build_tool, is_service_process, is_system_tool,
+};
 pub use topology::{ObservedConnectionEndpoints, Topology, TopologyBuilder, TopologyDelta};

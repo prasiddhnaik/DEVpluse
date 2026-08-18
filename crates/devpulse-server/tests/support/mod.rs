@@ -76,5 +76,6 @@ pub fn tick(delta: RegistryDelta, topology: TopologyDelta) -> TickResult {
         collector_duration_ms: 4,
         process: Default::default(),
         socket: Default::default(),
+        container: None,
     }
 }

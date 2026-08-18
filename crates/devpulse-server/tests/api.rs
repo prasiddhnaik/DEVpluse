@@ -15,7 +15,7 @@ use devpulse_core::registry::RegistryDelta;
 use devpulse_core::topology::TopologyDelta;
 use devpulse_server::api;
 use devpulse_server::security::OriginPolicy;
-use devpulse_server::state::AppState;
+use devpulse_server::state::{AppState, TickUpdate};
 use serde_json::Value;
 use support::{at, project, service, tick};
 use tower::ServiceExt;
@@ -37,13 +37,14 @@ async fn seeded_state() -> AppState {
     projects.insert(project.id.clone(), project);
 
     state
-        .apply_tick(
-            &tick(RegistryDelta::default(), TopologyDelta::default()),
-            &projects,
-            vec![web, api],
-            vec![edge],
-            Vec::new(),
-        )
+        .apply_tick(TickUpdate {
+            tick: &tick(RegistryDelta::default(), TopologyDelta::default()),
+            projects: &projects,
+            services: vec![web, api],
+            connections: vec![edge],
+            events: Vec::new(),
+            warnings: None,
+        })
         .await;
     state
 }

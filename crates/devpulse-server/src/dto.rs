@@ -281,6 +281,27 @@ pub fn worst_health(healths: impl IntoIterator<Item = Health>) -> Health {
     worst
 }
 
+/// Health of a project as shown on the overview card.
+///
+/// Stopped services are history, not the current state of the work. A project
+/// with a live API and a dead helper must read as healthy (or degraded), not
+/// as stopped. A project with nothing running *is* stopped.
+pub fn project_health<'a>(services: impl IntoIterator<Item = &'a Service>) -> Health {
+    let services: Vec<&Service> = services.into_iter().collect();
+    let running: Vec<Health> = services
+        .iter()
+        .filter(|service| service.is_running())
+        .map(|service| service.health)
+        .collect();
+    if !running.is_empty() {
+        worst_health(running)
+    } else if services.is_empty() {
+        Health::Unknown
+    } else {
+        Health::Stopped
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectSummaryDto {
     pub id: String,
@@ -310,7 +331,7 @@ impl ProjectSummaryDto {
             last_seen: rfc3339(project.last_seen),
             service_count: services.len(),
             running_service_count: services.iter().filter(|s| s.is_running()).count(),
-            health: health_str(worst_health(services.iter().map(|s| s.health))).to_string(),
+            health: health_str(project_health(services.iter().copied())).to_string(),
             memory_bytes: services.iter().map(|s| s.total_memory_bytes()).sum(),
             cpu_percent: services.iter().map(|s| s.total_cpu_percent()).sum(),
             recent_warning: recent_warning.map(WarningDto::from),
@@ -461,6 +482,30 @@ pub struct ProjectDetailDto {
     pub recent_events: Vec<EventDto>,
 }
 
+/// One event in another's context (`GET /api/v1/events/:id/context`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelatedEventDto {
+    #[serde(flatten)]
+    pub event: EventDto,
+    /// `same_service`, `same_project`, `preceding_file_change` or `temporal`.
+    /// Never "caused by": DevPulse reports adjacency, not causation
+    /// (`DECISIONS.md` D008).
+    pub relation: String,
+    /// Signed milliseconds from the anchor; negative is before it.
+    pub offset_ms: i64,
+}
+
+/// What happened around one event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventContextDto {
+    pub event: EventDto,
+    pub window_ms: u64,
+    /// Nearest first.
+    pub before: Vec<RelatedEventDto>,
+    /// Nearest first.
+    pub after: Vec<RelatedEventDto>,
+}
+
 /// Whether Docker could be inspected, and if not, why — phrased for a human.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DockerStatusDto {
@@ -481,6 +526,9 @@ pub struct CountsDto {
 pub struct CollectorsDto {
     pub process: CollectorStatusDto,
     pub socket: CollectorStatusDto,
+    /// Absent when the daemon has no Docker collector at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<CollectorStatusDto>,
 }
 
 /// `GET /api/v1/status`. Cheap enough to poll, and the only endpoint that is
@@ -507,6 +555,9 @@ pub struct CollectorStatusDto {
     pub degraded_fields: BTreeMap<String, usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sockets_without_owner: Option<usize>,
+    /// Why the last collection produced nothing, when it produced nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[cfg(test)]
@@ -571,5 +622,51 @@ mod tests {
         );
         assert_eq!(worst_health([Health::Healthy]), Health::Healthy);
         assert_eq!(worst_health([]), Health::Unknown);
+    }
+
+    fn host_service(health: Health, running: bool) -> Service {
+        use devpulse_core::identity::Runtime;
+        use devpulse_core::ids::ServiceId;
+        use std::path::PathBuf;
+
+        Service {
+            id: ServiceId::derived("svc"),
+            project_id: None,
+            name: "api".into(),
+            kind: ServiceKind::HostProcess,
+            runtime: Runtime::Native,
+            fingerprint: "host".into(),
+            health,
+            instances: if running {
+                vec![ProcessInstance {
+                    pid: 1,
+                    parent_pid: None,
+                    executable: Some(PathBuf::from("/opt/app")),
+                    command: vec!["api".into()],
+                    cwd: None,
+                    started_at_epoch_secs: 0,
+                    cpu_percent: 0.0,
+                    memory_bytes: 0,
+                }]
+            } else {
+                vec![]
+            },
+            endpoints: vec![],
+            first_seen: UNIX_EPOCH,
+            last_seen: UNIX_EPOCH,
+            restart_count: 0,
+        }
+    }
+
+    #[test]
+    fn project_health_does_not_let_a_dead_helper_paint_the_project_stopped() {
+        let live = host_service(Health::Healthy, true);
+        let dead = host_service(Health::Stopped, false);
+        assert_eq!(project_health([&live, &dead]), Health::Healthy);
+
+        let degraded = host_service(Health::Degraded, true);
+        assert_eq!(project_health([&degraded, &dead]), Health::Degraded);
+        assert_eq!(project_health([&dead]), Health::Stopped);
+        assert_eq!(project_health([] as [&Service; 0]), Health::Unknown);
     }
 }

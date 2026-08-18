@@ -293,16 +293,18 @@ pub enum EventKind {
     },
     ServiceStarted {
         service_id: ServiceId,
-        pid: u32,
+        /// `None` for a container: Docker's container list does not disclose
+        /// the host PIDs of the processes inside it (`AGENTS.md` rule 3).
+        pid: Option<u32>,
     },
     ServiceStopped {
         service_id: ServiceId,
-        pid: u32,
+        pid: Option<u32>,
     },
     ServiceRestarted {
         service_id: ServiceId,
-        old_pid: u32,
-        new_pid: u32,
+        old_pid: Option<u32>,
+        new_pid: Option<u32>,
     },
     PortOpened {
         service_id: Option<ServiceId>,

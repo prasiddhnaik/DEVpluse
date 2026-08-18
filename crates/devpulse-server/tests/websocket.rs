@@ -15,7 +15,7 @@ use devpulse_core::registry::RegistryDelta;
 use devpulse_core::topology::TopologyDelta;
 use devpulse_server::api;
 use devpulse_server::security::OriginPolicy;
-use devpulse_server::state::AppState;
+use devpulse_server::state::{AppState, TickUpdate};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use support::{at, project, service, tick};
@@ -88,7 +88,7 @@ fn projects() -> BTreeMap<devpulse_core::ids::ProjectId, Project> {
 async fn publish_start(state: &AppState) {
     let web = service("web", 41010, 100);
     let delta = RegistryDelta {
-        started: vec![(web.id.clone(), 100)],
+        started: vec![(web.id.clone(), Some(100))],
         ..RegistryDelta::default()
     };
     let event = DevPulseEvent {
@@ -97,20 +97,21 @@ async fn publish_start(state: &AppState) {
         project_id: web.project_id.clone(),
         kind: EventKind::ServiceStarted {
             service_id: web.id.clone(),
-            pid: 100,
+            pid: Some(100),
         },
     };
 
-    let frames = state
-        .apply_tick(
-            &tick(delta, TopologyDelta::default()),
-            &projects(),
-            vec![web],
-            Vec::new(),
-            vec![event],
-        )
+    let applied = state
+        .apply_tick(TickUpdate {
+            tick: &tick(delta, TopologyDelta::default()),
+            projects: &projects(),
+            services: vec![web],
+            connections: Vec::new(),
+            events: vec![event],
+            warnings: None,
+        })
         .await;
-    for frame in frames {
+    for frame in applied.frames {
         state.publish(frame);
     }
 }
@@ -119,23 +120,24 @@ async fn publish_start(state: &AppState) {
 async fn publish_stop(state: &AppState) {
     let web = service("web", 41010, 100);
     let delta = RegistryDelta {
-        stopped: vec![(web.id.clone(), 100)],
+        stopped: vec![(web.id.clone(), Some(100))],
         ..RegistryDelta::default()
     };
     let mut stopped = web.clone();
     stopped.instances.clear();
     stopped.health = devpulse_core::model::Health::Stopped;
 
-    let frames = state
-        .apply_tick(
-            &tick(delta, TopologyDelta::default()),
-            &projects(),
-            vec![stopped],
-            Vec::new(),
-            Vec::new(),
-        )
+    let applied = state
+        .apply_tick(TickUpdate {
+            tick: &tick(delta, TopologyDelta::default()),
+            projects: &projects(),
+            services: vec![stopped],
+            connections: Vec::new(),
+            events: Vec::new(),
+            warnings: None,
+        })
         .await;
-    for frame in frames {
+    for frame in applied.frames {
         state.publish(frame);
     }
 }

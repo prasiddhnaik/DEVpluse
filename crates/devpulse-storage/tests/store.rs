@@ -139,16 +139,16 @@ fn one_of_every_event_kind(project: &ProjectId, service: &ServiceId) -> Vec<DevP
         },
         EventKind::ServiceStarted {
             service_id: service.clone(),
-            pid: 10,
+            pid: Some(10),
         },
         EventKind::ServiceStopped {
             service_id: service.clone(),
-            pid: 10,
+            pid: Some(10),
         },
         EventKind::ServiceRestarted {
             service_id: service.clone(),
-            old_pid: 10,
-            new_pid: 11,
+            old_pid: Some(10),
+            new_pid: Some(11),
         },
         EventKind::PortOpened {
             service_id: Some(service.clone()),
@@ -305,7 +305,7 @@ fn recent_events_returns_the_newest_first_and_honours_the_limit() {
                 Some(&project.id),
                 EventKind::ServiceStarted {
                     service_id: service.id.clone(),
-                    pid: 100 + index,
+                    pid: Some(100 + index),
                 },
             )
         })
@@ -443,7 +443,7 @@ fn re_recording_an_event_id_is_a_no_op() {
         Some(&project.id),
         EventKind::ServiceStopped {
             service_id: service.id.clone(),
-            pid: 7,
+            pid: Some(7),
         },
     )];
 
@@ -553,7 +553,7 @@ fn retention_deletes_only_events_past_the_age_cutoff() {
                 Some(&project.id),
                 EventKind::ServiceStarted {
                     service_id: service.id.clone(),
-                    pid: 1,
+                    pid: Some(1),
                 },
             )
         })
@@ -593,7 +593,7 @@ fn retention_trims_the_oldest_events_over_the_row_cap() {
                 Some(&project.id),
                 EventKind::ServiceStarted {
                     service_id: service.id.clone(),
-                    pid: 1,
+                    pid: Some(1),
                 },
             )
         })

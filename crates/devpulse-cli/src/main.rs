@@ -70,6 +70,19 @@ struct ServeArgs {
     /// Skip the Docker probe at startup.
     #[arg(long)]
     no_docker: bool,
+
+    /// Sample per-container CPU and memory. Costs about a second per snapshot
+    /// batch, because Docker needs two samples to compute a percentage.
+    #[arg(long)]
+    docker_stats: bool,
+
+    /// SQLite file for history. Defaults to `~/.devpulse/devpulse.db`.
+    #[arg(long)]
+    db: Option<PathBuf>,
+
+    /// Keep no history on disk. Events live in memory and die with the daemon.
+    #[arg(long)]
+    no_persistence: bool,
 }
 
 #[derive(Debug, Args)]
@@ -392,12 +405,25 @@ async fn serve(args: &ServeArgs) -> Result<()> {
             ..Default::default()
         },
         probe_docker: !args.no_docker,
+        docker_stats: args.docker_stats,
+        database: if args.no_persistence {
+            None
+        } else {
+            args.db
+                .clone()
+                .or_else(devpulse_server::persistence::default_database_path)
+        },
         ..Default::default()
     };
 
+    let database = config.database.clone();
     let daemon = Daemon::bind(config).await?;
     let addr = daemon.local_addr()?;
     println!("devpulse daemon listening on http://{addr}");
+    match &database {
+        Some(path) => println!("  history   {}", path.display()),
+        None => println!("  history   in memory only"),
+    }
     println!("  status    http://{addr}/api/v1/status");
     println!("  websocket ws://{addr}/ws/v1");
     println!("press ctrl-c to stop");

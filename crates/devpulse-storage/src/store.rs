@@ -287,6 +287,39 @@ impl Store {
         Ok(())
     }
 
+    /// Append many readings in one transaction.
+    ///
+    /// The daemon samples every running service once per tick, so the
+    /// per-sample version would be one implicit transaction per service per
+    /// second. This is the same write, paid for once.
+    pub fn record_resource_samples(
+        &self,
+        samples: &[(ServiceId, ResourceSample)],
+    ) -> Result<usize, StorageError> {
+        if samples.is_empty() {
+            return Ok(0);
+        }
+        let mut guard = self.conn();
+        let tx = guard.transaction()?;
+        let mut inserted = 0;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO resource_samples (service_id, at, cpu_percent, memory_bytes)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (service, sample) in samples {
+                inserted += stmt.execute(params![
+                    service.as_str(),
+                    to_millis(sample.at),
+                    f64::from(sample.cpu_percent),
+                    bytes_to_sql(sample.memory_bytes),
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(inserted)
+    }
+
     /// All known projects, ordered by name then id so the listing is stable
     /// across calls.
     pub fn projects(&self) -> Result<Vec<Project>, StorageError> {
