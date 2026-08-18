@@ -1,157 +1,251 @@
 # Runscape
 
-Run one command and see what your local code is already doing — the processes,
-the ports, the containers, how they talk to each other, and what changed just
-before something broke.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+
+One command. A live picture of what your local code is already doing — processes, ports, containers, who talks to whom, and what moved just before something broke.
 
 ```bash
-runscape serve              # visual dashboard at http://localhost:2013
-runscape serve --headless   # same process, JSON ready line, no browser
+cargo install --git https://github.com/prasiddhnaik/DEVpluse.git --locked runscape-cli
+runscape serve
 ```
 
-No configuration, no agent to install in your app, no account. Runscape reads
-what the operating system already knows about your own processes and groups it
-into projects.
+Opens **http://localhost:2013**. No config file. No SDK in your app. No account. Nothing leaves the machine.
 
-What it does for you, end to end — projects, services, topology, warnings,
-“what changed”, safety limits — is in [`docs/for-developers.md`](docs/for-developers.md).
-Coding agents should use [`docs/for-agents.md`](docs/for-agents.md).
+The GitHub repository is still named `DEVpluse`. The product, binary, and crates are **Runscape**.
+
+---
+
+## Install
+
+You need a Rust toolchain **1.85 or newer** (`rustc -V`). If you do not have one:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+```
+
+Then install the `runscape` binary from this repo (not crates.io yet):
+
+```bash
+cargo install --git https://github.com/prasiddhnaik/DEVpluse.git --locked runscape-cli
+runscape --version
+runscape serve
+```
+
+That compiles the workspace, bakes the dashboard into the binary, and puts `runscape` on your `PATH` (`~/.cargo/bin`). First install takes a few minutes; later ones are incremental.
+
+| You have | Do this |
+| --- | --- |
+| Rust 1.85+ | `cargo install --git https://github.com/prasiddhnaik/DEVpluse.git --locked runscape-cli` |
+| A clone of this repo | `cargo install --path crates/runscape-cli --locked` |
+| An existing install | the same `cargo install --git …` command; Cargo replaces the binary |
+
+macOS and Linux are the supported observers. Unprivileged, Runscape only sees **your** processes.
+
+Uninstall:
+
+```bash
+cargo uninstall runscape-cli
+rm -rf ~/.runscape          # optional: local history
+```
+
+---
+
+## Quick start
+
+```bash
+runscape serve              # dashboard + API on loopback :2013
+runscape serve --headless   # same worker, JSON ready line, no browser
+runscape serve --no-open    # print the URL, do not open a browser
+```
+
+Then start a dev server in a git repo. Within about a second it should appear as a project.
+
+```mermaid
+flowchart LR
+  You["You"] -->|"runscape serve"| Worker["Local pulse worker"]
+  Worker -->|"reads"| OS["This machine"]
+  Worker -->|"serves"| UI["http://localhost:2013"]
+  Apps["Your apps"] -->|"already running"| OS
+```
+
+Useful flags for `serve`:
+
+| Flag / env | Meaning |
+| --- | --- |
+| `--port <n>` / `RUNSCAPE_PORT` | Port. Bind address is always `127.0.0.1`. |
+| `--interval <secs>` | Snapshot interval. Default 1s. |
+| `--db <path>` | History SQLite file. Default `~/.runscape/runscape.db`. |
+| `--no-persistence` | Memory only; write nothing to disk. |
+| `--no-docker` | Skip the Docker probe. |
+| `--docker-stats` | Per-container CPU/memory. Costs ~1s per batch. |
+| `--headless` | Agents: wait for the first snapshot, print one JSON ready line. |
+| `--no-open` | Do not open a browser. |
+
+One-shot commands (no worker required):
+
+```bash
+runscape scan-processes
+runscape scan-sockets
+runscape scan-projects
+runscape resolve-project .
+runscape capabilities
+runscape bench
+```
+
+Against a running worker (compact JSON, for agents — see [`docs/for-agents.md`](docs/for-agents.md)):
+
+```bash
+runscape now --here
+runscape watch
+```
+
+---
 
 ## What it shows
 
-* **Projects** — processes grouped by the repository or workspace they run in,
-  resolved from each process's working directory, with the evidence and a
-  confidence for the grouping.
-* **Services** — a stable identity per logical service that survives a restart,
-  because a PID does not (`DECISIONS.md` D006).
-* **Topology** — service-to-service edges reconstructed from the kernel's socket
-  tables. Every edge carries its evidence type, confidence, and when it was
-  first and last seen.
-* **Containers** — Docker containers appear as services in the same graph,
-  identified by their Compose labels so `docker compose up` does not create a
-  new identity.
-* **Events and warnings** — starts, stops, restarts, ports, health changes and
-  file changes, plus deterministic rules for restart loops, sustained CPU,
-  one-way memory growth, degraded health and port conflicts.
-* **What changed** — click any event to see what happened around it, labelled
-  with *why* it is related. Runscape states adjacency; it never claims cause.
+* **Projects** — processes grouped by the repository or workspace they run in, from each process's working directory, with evidence and a confidence.
+* **Services** — a stable identity per logical service that survives a restart. A PID does not.
+* **Topology** — service-to-service edges from the kernel's socket tables. Every edge carries evidence type, confidence, and first/last seen.
+* **Containers** — Docker containers in the same graph, keyed by Compose labels so `docker compose up` does not mint a new identity.
+* **Resources** — CPU, RSS, virtual memory, threads, per-tick disk I/O, observed connection counts. Project pages sum the services in that project per tick.
+* **Events and warnings** — starts, stops, restarts, ports, health, file saves; plus deterministic rules for restart loops, sustained CPU, one-way memory growth, degraded health, port conflicts.
+* **What changed** — click an event to see what happened around it, labelled with *why* it is related. Adjacency, never cause.
 
-## What it is not
+Not a Datadog clone, not Docker Desktop, not a process manager, not a packet sniffer. It observes and reports. It starts and stops nothing.
 
-Not a Datadog clone, not a Docker Desktop clone, not a process manager, not a
-packet sniffer. It observes and reports; it starts and stops nothing
-(`DECISIONS.md` D004).
+---
 
-## Install and run
+## How it is built
 
-Requires a stable Rust toolchain (1.85+). The visual dashboard is baked into
-the binary.
+One OS process. Discovery, grouping, the HTTP/WebSocket API, and the dashboard all live inside `runscape serve`. The dashboard is a renderer: if a number is on screen, the worker said it.
 
-```bash
-cargo install --git https://github.com/prasiddhnaik/DEVpluse runscape-cli
-runscape serve
+```mermaid
+flowchart TB
+  subgraph machine ["This machine"]
+    Proc["Process table"]
+    Sock["Kernel socket tables"]
+    Dock["Docker engine"]
+    Files["Watched project files"]
+  end
+
+  subgraph worker ["runscape serve — local pulse worker"]
+    Disc["runscape-discovery"]
+    Dkr["runscape-docker"]
+    Core["runscape-core<br/>identity · grouping · topology"]
+    Ev["runscape-events<br/>diffs · warnings · correlation"]
+    Store["runscape-storage<br/>SQLite ~/.runscape"]
+    Srv["runscape-server<br/>HTTP + WebSocket on 127.0.0.1"]
+  end
+
+  subgraph clients ["Same machine only"]
+    UI["Dashboard :2013"]
+    CLI["runscape now / watch"]
+    Agent["Coding agents --headless"]
+  end
+
+  Proc --> Disc
+  Sock --> Disc
+  Files --> Disc
+  Dock --> Dkr
+  Disc --> Core
+  Dkr --> Core
+  Core --> Ev
+  Ev --> Store
+  Core --> Srv
+  Ev --> Srv
+  Store --> Srv
+  Srv --> UI
+  Srv --> CLI
+  Srv --> Agent
 ```
 
-That opens http://localhost:2013. From a clone:
+Each tick is a read of the OS, a reconcile, then a push. Nothing is inferred into a fact the OS did not provide.
 
-```bash
-cargo install --path crates/runscape-cli --locked
-runscape serve
+```mermaid
+sequenceDiagram
+  autonumber
+  participant OS as This machine
+  participant D as Discovery
+  participant C as Core
+  participant E as Events
+  participant A as API / WebSocket
+  participant U as Dashboard
+
+  loop about once per second
+    D->>OS: process list, sockets, optional Docker
+    OS-->>D: what this user is allowed to see
+    D->>C: observations
+    C->>C: group into projects and services
+    C->>C: reconstruct edges from sockets
+    C->>E: snapshot delta
+    E->>E: warnings, correlation
+    E->>A: frames
+    A-->>U: live view
+  end
 ```
 
-Not on crates.io yet (`publish = false`). Install from git or from this repo.
+Loopback is the trust boundary. The worker will not bind `0.0.0.0`.
 
-Useful flags:
-
-| Flag | Meaning |
-| --- | --- |
-| `--port <n>` | Listen on another port. The address is always loopback. |
-| `--interval <secs>` | Snapshot interval. Default 1s. |
-| `--db <path>` | History database. Default `~/.runscape/runscape.db`. |
-| `--no-persistence` | Keep history in memory only; write nothing to disk. |
-| `--no-docker` | Skip the Docker probe entirely. |
-| `--docker-stats` | Per-container CPU/memory. Costs ~1s per snapshot batch. |
-| `--headless` | Agent mode: wait for the first snapshot, print one JSON ready line, do not open a browser. The UI is still at `/`. See [`docs/for-agents.md`](docs/for-agents.md). |
-| `--no-open` | Do not open a browser when starting the visual dashboard. |
-
-The CLI also answers questions without the daemon:
-
-```bash
-runscape scan-processes      # what is running, with cwd, CPU, memory
-runscape scan-sockets        # listening sockets and connections, with owning PIDs
-runscape scan-projects       # how processes group into projects
-runscape resolve-project .   # which project root a directory resolves to, and why
-runscape capabilities        # what this OS will and will not disclose
-runscape bench               # collector cost against the polling budget
-
-# against a running daemon (compact JSON, for agents)
-runscape now --here          # this repo's projects, warnings, recent events
-runscape watch               # NDJSON event/warning/service frames
+```mermaid
+flowchart LR
+  subgraph local ["127.0.0.1 only"]
+    W["Pulse worker :2013"]
+    B["Your browser"]
+    C["CLI / agents"]
+  end
+  Internet["The internet"] -.->|"not reachable"| W
+  B -->|"Origin allow-list"| W
+  C -->|"no Origin header"| W
 ```
 
-## The dashboard
+---
 
-`runscape serve` serves it at `http://localhost:2013` (same origin as the API).
-It renders what the daemon sends and computes no runtime facts of its own
-(`AGENTS.md` rule 8). The UI calls this process the **local pulse worker**;
-keep saying *daemon* in code, and never put "daemon" in user-visible strings.
-See the glossary in [`docs/for-developers.md`](docs/for-developers.md).
+## Privacy
 
-To iterate on the React app without rebuilding the binary:
+* Binds **loopback only**. Refuses to start on any other address.
+* Browser requests are origin-checked so a random website cannot read your process list.
+* Environment variable **values** are never read.
+* Secret-looking argv is redacted at capture. The raw command line never reaches memory the API can serve.
+* Nothing is uploaded. History is one SQLite file you can delete.
+* No endpoint accepts a path or a command. The API cannot be turned into a file reader or an executor.
 
-```bash
-cd apps/web
-bun install
-bun dev
-```
+Unprivileged on macOS and Linux:
 
-That is http://localhost:3000, talking to a worker on 2013. After UI changes
-that should ship in `runscape serve`, run `bun run export:daemon` and rebuild
-the CLI. Point a custom daemon with `NEXT_PUBLIC_RUNSCAPE_HTTP` and
-`NEXT_PUBLIC_RUNSCAPE_WS`.
+* other users' processes disclose no cwd / argv / executable, so they are not grouped
+* other users' sockets are invisible, not reported with an unknown owner
+* a connection is only attributable to the accepting side after `accept()` returns, so topology lags by about one interval
 
-## Privacy and security
+`runscape capabilities` and `GET /api/v1/status` report what this OS will actually disclose.
 
-* The daemon binds loopback only, and refuses to start on any other address.
-* Browser requests are checked against an origin allow-list before they are
-  answered, so a random website cannot read your process list.
-* Environment variable *values* are never read.
-* Secret-looking command-line arguments are redacted at capture time — the raw
-  argv never reaches memory the API can serve.
-* Nothing is uploaded. History lives in one SQLite file you can delete.
-* No endpoint accepts a path or a command, so the API cannot be turned into a
-  file reader or an executor.
+---
 
-## What it cannot see
-
-Runscape never invents a fact the OS did not give it (`AGENTS.md` rule 3).
-Unprivileged on macOS and Linux, that means:
-
-* processes owned by other users disclose no cwd, argv or executable, so they
-  are not grouped into projects;
-* sockets owned by other users are invisible rather than reported with an
-  unknown owner;
-* a connection is only attributable to the accepting side once `accept()` has
-  returned, so topology is eventually consistent within about one interval.
-
-`GET /api/v1/status` reports the current platform's capability matrix and how
-many fields the last collection could not read. See
-`docs/discovery-spike-results.md` for the measurements behind this.
-
-## Repository layout
+## Repository
 
 ```text
 crates/runscape-core        domain model, identity, grouping, registry, topology
 crates/runscape-discovery   processes, sockets, file watching, platform limits
 crates/runscape-events      snapshot diffing, warning rules, correlation
-crates/runscape-docker      Docker inspection via Bollard
+crates/runscape-docker      Docker inspection
 crates/runscape-storage     SQLite persistence and retention
-crates/runscape-server      the daemon: snapshot loop, HTTP + WebSocket API
-crates/runscape-cli         the `runscape` binary (scans, daemon, headless agent CLI)
-apps/web                    the dashboard (Next.js, TypeScript, Tailwind)
-fixtures                    deterministic TCP fixtures used by the tests
-docs                        API contract, spike results, verification records
+crates/runscape-server      snapshot loop, HTTP + WebSocket, embedded dashboard
+crates/runscape-cli         the `runscape` binary
+apps/web                    dashboard (Next.js) — baked into the binary for `serve`
+docs                        API contract, product notes, agent notes
 ```
+
+The visual UI is served by `runscape serve`. To iterate on React without rebuilding:
+
+```bash
+cd apps/web
+bun install
+bun dev                 # http://localhost:3000 → worker on :2013
+```
+
+Ship UI into the binary with `bun run export:daemon`, then rebuild `runscape-cli`.
+
+---
 
 ## Development
 
@@ -163,5 +257,14 @@ cargo test --workspace
 cd apps/web && bun run lint && bun run typecheck && bun test
 ```
 
-`apps/web`'s test suite includes a contract check against a *running* daemon; it
-skips itself when nothing is listening on 2013, and runs when there is.
+`apps/web` includes a contract check against a *running* worker; it skips when nothing is on :2013.
+
+Product walkthrough: [`docs/for-developers.md`](docs/for-developers.md).  
+HTTP contract: [`docs/api-contract.md`](docs/api-contract.md).  
+Agents: [`docs/for-agents.md`](docs/for-agents.md).
+
+---
+
+## License
+
+[MIT](LICENSE)

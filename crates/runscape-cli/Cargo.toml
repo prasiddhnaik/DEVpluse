@@ -1,11 +1,15 @@
 [package]
 name = "runscape-cli"
-description = "Runscape CLI: one-shot scans, the daemon, and a headless agent interface."
+description = "Runscape CLI: one-shot scans, the local pulse worker, and a headless agent interface."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 publish.workspace = true
+keywords = ["observability", "local-first", "developer-tools"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "runscape"
