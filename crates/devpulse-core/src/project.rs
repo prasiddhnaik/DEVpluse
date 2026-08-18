@@ -26,9 +26,11 @@
 //! Nothing here silently collapses a weak match into a strong one: the caller
 //! always receives the confidence and the evidence list.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -262,10 +264,32 @@ impl Default for ResolverConfig {
     }
 }
 
+/// How long a cwd → root answer is reused. Long enough that a 1 Hz snapshot
+/// loop does not re-stat the same tree every tick; short enough that `git init`
+/// in a new directory still shows up within a few seconds.
+const RESOLVE_CACHE_TTL: Duration = Duration::from_secs(5);
+const RESOLVE_CACHE_MAX: usize = 512;
+
+#[derive(Clone, Debug)]
+struct CachedResolve {
+    result: Result<ProjectMatch, NoProject>,
+    stored_at: Instant,
+}
+
 /// Resolves working directories to project roots.
-#[derive(Debug, Clone, Default)]
+///
+/// Clones share the cwd cache: the snapshot loop resolves hundreds of process
+/// working directories per tick, and most of them have not moved.
+#[derive(Debug, Clone)]
 pub struct ProjectResolver {
     config: ResolverConfig,
+    cache: Arc<Mutex<HashMap<PathBuf, CachedResolve>>>,
+}
+
+impl Default for ProjectResolver {
+    fn default() -> Self {
+        Self::new(ResolverConfig::default())
+    }
 }
 
 #[derive(Debug)]
@@ -277,7 +301,10 @@ struct Candidate {
 
 impl ProjectResolver {
     pub fn new(config: ResolverConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            cache: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     pub fn config(&self) -> &ResolverConfig {
@@ -291,10 +318,62 @@ impl ProjectResolver {
             reason: err.to_string(),
         })?;
 
+        if let Some(hit) = self.cache_get(&cwd) {
+            return hit;
+        }
+
+        let result = self.resolve_uncached(&cwd);
+        // A path that could not be read is often a process that just exited;
+        // caching that would hide the next process that reuses the directory.
+        if !matches!(result, Err(NoProject::PathUnavailable { .. })) {
+            self.cache_put(cwd.clone(), result.clone());
+        }
+        result
+    }
+
+    fn cache_get(&self, cwd: &Path) -> Option<Result<ProjectMatch, NoProject>> {
+        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+        let entry = cache.get(cwd)?;
+        if entry.stored_at.elapsed() > RESOLVE_CACHE_TTL {
+            cache.remove(cwd);
+            return None;
+        }
+        Some(entry.result.clone())
+    }
+
+    fn cache_put(&self, cwd: PathBuf, result: Result<ProjectMatch, NoProject>) {
+        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+        if cache.len() >= RESOLVE_CACHE_MAX {
+            cache.retain(|_, entry| entry.stored_at.elapsed() <= RESOLVE_CACHE_TTL);
+            if cache.len() >= RESOLVE_CACHE_MAX {
+                cache.clear();
+            }
+        }
+        cache.insert(
+            cwd,
+            CachedResolve {
+                result,
+                stored_at: Instant::now(),
+            },
+        );
+    }
+
+    fn resolve_uncached(&self, cwd: &Path) -> Result<ProjectMatch, NoProject> {
         let candidates: Vec<Candidate> = cwd
             .ancestors()
             .take(self.config.max_depth)
             .filter_map(|dir| {
+                // Excluded roots (home, /Applications, /usr, …) are never
+                // projects. Stat-ing them for markers is wasted work; keep
+                // walking so a project sitting *under* an excluded ancestor
+                // (anything inside $HOME) can still match.
+                if self.config.is_excluded(dir) {
+                    return Some(Candidate {
+                        dir: dir.to_path_buf(),
+                        markers: Vec::new(),
+                        excluded: true,
+                    });
+                }
                 let markers = scan_directory(dir);
                 if markers.is_empty() {
                     return None;
@@ -302,13 +381,15 @@ impl ProjectResolver {
                 Some(Candidate {
                     dir: dir.to_path_buf(),
                     markers,
-                    excluded: self.config.is_excluded(dir),
+                    excluded: false,
                 })
             })
             .collect();
 
         if candidates.is_empty() {
-            return Err(NoProject::NoMarkers { path: cwd });
+            return Err(NoProject::NoMarkers {
+                path: cwd.to_path_buf(),
+            });
         }
 
         let usable: Vec<&Candidate> = candidates.iter().filter(|c| !c.excluded).collect();
@@ -319,10 +400,12 @@ impl ProjectResolver {
         }
 
         let Some((candidate, kind)) = select_root(&usable) else {
-            return Err(NoProject::NoMarkers { path: cwd });
+            return Err(NoProject::NoMarkers {
+                path: cwd.to_path_buf(),
+            });
         };
 
-        Ok(build_match(&cwd, candidate, kind))
+        Ok(build_match(cwd, candidate, kind))
     }
 }
 
@@ -827,5 +910,19 @@ mod tests {
 
         let r = resolver();
         assert_eq!(r.resolve(&cwd).unwrap(), r.resolve(&cwd).unwrap());
+    }
+
+    #[test]
+    fn a_second_resolve_of_the_same_cwd_is_cached() {
+        let fx = Fixture::new();
+        fx.git("repo");
+        fx.write("repo/package.json", r#"{"name":"app"}"#);
+        let cwd = fx.mkdir("repo/src");
+
+        let r = resolver();
+        let first = r.resolve(&cwd).expect("first");
+        let second = r.resolve(&cwd).expect("cached");
+        assert_eq!(first, second);
+        assert_eq!(first.root, fx.path("repo"));
     }
 }

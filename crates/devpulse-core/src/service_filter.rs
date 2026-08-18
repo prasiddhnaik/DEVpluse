@@ -13,9 +13,9 @@
 //!
 //! 1. Anything listening on a port is a service. A port is the strongest
 //!    evidence there is that something is serving.
-//! 2. Anything else must clear three bars: it is not one of the operating
-//!    system's own tools, it is not a compiler or build driver, and it has
-//!    been alive for at least [`MIN_PORTLESS_LIFETIME`].
+//! 2. Anything else must clear four bars: it is not one of the operating
+//!    system's own tools, it is not a GUI app bundle, it is not a compiler or
+//!    build driver, and it has been alive for at least [`MIN_PORTLESS_LIFETIME`].
 //!
 //! Rule 2 keeps a worker or a queue consumer — the source end of most edges
 //! DevPulse draws — while dropping `/bin/zsh`, the `sleep` in a script, and the
@@ -50,6 +50,17 @@ const SYSTEM_BIN_DIRS: &[&str] = &[
     "/System/",
     "/Library/Apple/",
     "C:\\Windows\\",
+];
+
+/// GUI app bundles. A Chrome helper with a readable cwd is not a service; walking
+/// `/Applications` trees for `.git` is wasted work. Listeners still count:
+/// Postgres.app and Docker Desktop bind ports on purpose.
+///
+/// Path prefixes only — no process-name denylist.
+const BUNDLED_APP_DIRS: &[&str] = &[
+    "/Applications/",
+    "C:\\Program Files\\",
+    "C:\\Program Files (x86)\\",
 ];
 
 /// Compilers, linkers and build drivers. None of these is ever a service, and
@@ -112,7 +123,7 @@ pub fn is_service_process(
         return false;
     };
 
-    if is_system_tool(executable) || is_build_tool(executable) {
+    if is_system_tool(executable) || is_build_tool(executable) || is_bundled_app(executable) {
         return false;
     }
 
@@ -133,8 +144,17 @@ pub fn is_build_tool(executable: &Path) -> bool {
 
 /// Whether a path is one of the operating system's own binaries.
 pub fn is_system_tool(executable: &Path) -> bool {
-    let path = executable.to_string_lossy();
-    SYSTEM_BIN_DIRS
+    path_starts_with_any(executable, SYSTEM_BIN_DIRS)
+}
+
+/// Whether a path lives inside a GUI app bundle (`/Applications`, Program Files).
+pub fn is_bundled_app(path: &Path) -> bool {
+    path_starts_with_any(path, BUNDLED_APP_DIRS)
+}
+
+fn path_starts_with_any(path: &Path, prefixes: &[&str]) -> bool {
+    let path = path.to_string_lossy();
+    prefixes
         .iter()
         .any(|dir| path.starts_with(dir) || path.to_lowercase().starts_with(&dir.to_lowercase()))
 }
@@ -239,5 +259,24 @@ mod tests {
         assert!(!is_system_tool(&path("/opt/homebrew/bin/node")));
         assert!(!is_system_tool(&path("/usr/local/bin/deno")));
         assert!(is_system_tool(&path("/usr/bin/env")));
+    }
+
+    #[test]
+    fn bundled_gui_apps_are_not_services_unless_they_listen() {
+        let chrome = path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+        let vscode = path("C:\\Program Files\\Microsoft VS Code\\Code.exe");
+        assert!(is_bundled_app(&chrome));
+        assert!(is_bundled_app(&vscode));
+        assert!(!is_service_process(Some(&chrome), false, settled()));
+        assert!(!is_service_process(Some(&vscode), false, settled()));
+        assert!(is_service_process(
+            Some(&path("/Applications/Postgres.app/Contents/MacOS/postgres")),
+            true,
+            Some(Duration::from_millis(50))
+        ));
+        assert!(!is_bundled_app(&path(
+            "/Users/dev/project/target/debug/worker"
+        )));
+        assert!(!is_bundled_app(&path("/opt/homebrew/bin/node")));
     }
 }

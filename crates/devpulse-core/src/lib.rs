@@ -39,6 +39,6 @@ pub use redact::{REDACTED, redact_command};
 pub use registry::{RegistryDelta, ServiceObservation, ServiceRegistry};
 pub use resources::ResourceHistory;
 pub use service_filter::{
-    MIN_PORTLESS_LIFETIME, is_build_tool, is_service_process, is_system_tool,
+    MIN_PORTLESS_LIFETIME, is_build_tool, is_bundled_app, is_service_process, is_system_tool,
 };
 pub use topology::{ObservedConnectionEndpoints, Topology, TopologyBuilder, TopologyDelta};

@@ -254,6 +254,8 @@ pub struct AppliedTick {
     pub frames: Vec<Arc<str>>,
     /// Every currently active warning, for persistence.
     pub warnings: Vec<Warning>,
+    /// False when the warning set did not move; persistence can skip the rows.
+    pub warnings_changed: bool,
 }
 
 /// Everything an API handler needs. Cloned freely: it is an `Arc` inside.
@@ -297,6 +299,12 @@ impl AppState {
 
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<str>> {
         self.0.frames.subscribe()
+    }
+
+    /// How many WebSocket clients are currently attached. Zero means the
+    /// snapshot loop can afford to tick more slowly.
+    pub fn ws_subscribers(&self) -> usize {
+        self.0.frames.receiver_count()
     }
 
     /// Publish a pre-serialised frame. Failure means nobody is listening,
@@ -453,13 +461,21 @@ impl AppState {
         // the services as of this tick, their resource history, and the event
         // ring the rules read back over.
         let mut current_warnings = Vec::new();
+        let mut warnings_changed = false;
         if let Some(engine) = warnings {
             let history: BTreeMap<ServiceId, Vec<devpulse_core::model::ResourceSample>> = view
                 .services
                 .keys()
                 .map(|id| (id.clone(), view.resources.history(id)))
                 .collect();
-            let recent: Vec<DevPulseEvent> = view.events.iter().cloned().collect();
+            let window = engine.rules().event_window;
+            let recent: Vec<DevPulseEvent> = view
+                .events
+                .iter()
+                .rev()
+                .take_while(|event| now.duration_since(event.at).is_ok_and(|age| age <= window))
+                .cloned()
+                .collect();
             let services: Vec<Service> = view.services.values().cloned().collect();
 
             let delta = engine.evaluate(
@@ -472,6 +488,7 @@ impl AppState {
             );
 
             if !delta.is_empty() {
+                warnings_changed = true;
                 frames.push(ServerFrame::WarningsChanged {
                     at,
                     warnings: delta.added.iter().map(WarningDto::from).collect(),
@@ -486,6 +503,7 @@ impl AppState {
         AppliedTick {
             frames: frames.iter().filter_map(|f| self.encode(f)).collect(),
             warnings: current_warnings,
+            warnings_changed,
         }
     }
 

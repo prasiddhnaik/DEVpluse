@@ -119,6 +119,9 @@ pub struct SysinfoProcessCollector {
 struct SystemState {
     system: System,
     refreshed_once: bool,
+    /// Ticks completed. Used to refresh process metadata on a slower cadence
+    /// than CPU and memory.
+    ticks: u32,
 }
 
 impl Default for SysinfoProcessCollector {
@@ -134,6 +137,7 @@ impl SysinfoProcessCollector {
                 // `System::new()` loads nothing; the first refresh fills it.
                 system: System::new(),
                 refreshed_once: false,
+                ticks: 0,
             })),
         }
     }
@@ -143,17 +147,28 @@ impl SysinfoProcessCollector {
         get_current_pid().ok().map(|pid| pid.as_u32())
     }
 
+    /// How often to re-read cwd/exe/argv/user. Those rarely change on a live
+    /// process; asking for them every tick is most of the collector's cost.
+    const METADATA_REFRESH_EVERY: u32 = 5;
+
     /// Fields we ask the OS for. `environ` and `disk_usage` are deliberately
     /// excluded: `AGENTS.md` rule 6 forbids collecting environment values, and
     /// per-process IO is not part of the MVP.
-    fn refresh_kind() -> ProcessRefreshKind {
+    fn refresh_kind(full_metadata: bool) -> ProcessRefreshKind {
+        let metadata = if full_metadata {
+            UpdateKind::Always
+        } else {
+            // New PIDs still get cwd/exe/cmd on first sight; everyone else
+            // keeps the values from the last full pass.
+            UpdateKind::OnlyIfNotSet
+        };
         ProcessRefreshKind::nothing()
             .with_cpu()
             .with_memory()
-            .with_cwd(UpdateKind::Always)
-            .with_exe(UpdateKind::Always)
-            .with_cmd(UpdateKind::Always)
-            .with_user(UpdateKind::Always)
+            .with_cwd(metadata)
+            .with_exe(metadata)
+            .with_cmd(metadata)
+            .with_user(metadata)
             .without_tasks()
     }
 }
@@ -195,13 +210,15 @@ fn collect(state: &mut SystemState) -> ProcessSnapshot {
     let started = std::time::Instant::now();
     let captured_at = SystemTime::now();
 
+    let full_metadata = state.ticks % SysinfoProcessCollector::METADATA_REFRESH_EVERY == 0;
     state.system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        SysinfoProcessCollector::refresh_kind(),
+        SysinfoProcessCollector::refresh_kind(full_metadata),
     );
     let cpu_warming_up = !state.refreshed_once;
     state.refreshed_once = true;
+    state.ticks = state.ticks.saturating_add(1);
 
     let mut degradations = Degradations::default();
     let mut processes = Vec::with_capacity(state.system.processes().len());
@@ -312,11 +329,24 @@ mod tests {
         let collector = SysinfoProcessCollector::new();
         let first = collector.snapshot().await.expect("first");
         assert!(first.cpu_warming_up);
+        let own_pid = SysinfoProcessCollector::own_pid().expect("own pid");
 
         tokio::time::sleep(MINIMUM_CPU_UPDATE_INTERVAL).await;
         let second = collector.snapshot().await.expect("second");
         assert!(!second.cpu_warming_up);
         assert!(second.duration > Duration::ZERO, "duration is measured");
+        let me = second
+            .by_pid(own_pid)
+            .unwrap_or_else(|| panic!("own pid {own_pid} missing after cheap refresh"));
+        assert_eq!(
+            me.cwd.as_deref(),
+            Some(
+                std::fs::canonicalize(std::env::current_dir().expect("cwd"))
+                    .expect("canonical cwd")
+                    .as_path()
+            ),
+            "cached cwd must survive a metadata-skipping refresh"
+        );
     }
 
     #[tokio::test]

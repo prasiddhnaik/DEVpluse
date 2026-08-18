@@ -12,7 +12,7 @@
 //! - event derivation
 //! - resource sampling
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, SystemTime};
 
 use devpulse_core::grouping::{GroupingEngine, GroupingInput};
@@ -22,9 +22,10 @@ use devpulse_core::model::{Endpoint, ProcessInstance, Protocol, Service, Service
 use devpulse_core::model::{Project, ResourceSample};
 use devpulse_core::project::{ProjectResolver, ResolverConfig};
 use devpulse_core::registry::{RegistryDelta, ServiceObservation, ServiceRegistry};
+use devpulse_core::service_filter::{is_build_tool, is_bundled_app, is_system_tool};
 use devpulse_core::topology::{ObservedConnectionEndpoints, TopologyBuilder, TopologyDelta};
 use devpulse_discovery::error::CollectorError;
-use devpulse_discovery::process::{ProcessCollector, SysinfoProcessCollector};
+use devpulse_discovery::process::{ObservedProcess, ProcessCollector, SysinfoProcessCollector};
 use devpulse_discovery::socket::{Netstat2SocketCollector, SocketCollector};
 use devpulse_docker::collector::ContainerCollector;
 use tracing::{debug, warn};
@@ -110,7 +111,7 @@ impl SnapshotLoop {
         Self {
             _config: config,
             process_collector: SysinfoProcessCollector::new(),
-            socket_collector: Netstat2SocketCollector::new(),
+            socket_collector: Netstat2SocketCollector::tcp_only(),
             _project_resolver: project_resolver,
             grouping_engine,
             container_collector: None,
@@ -190,10 +191,32 @@ impl SnapshotLoop {
             "snapshot collected"
         );
 
-        // 2. Group processes into projects.
+        // 2. Group processes into projects. Shells, compilers and other
+        // people's processes are not services; walking their cwd trees for
+        // `.git` is the expensive half of a tick, so they never enter grouping.
+        let listening_pids: HashSet<u32> = socket_snapshot
+            .sockets
+            .iter()
+            .filter(|s| s.is_listening())
+            .flat_map(|s| s.pids.iter().copied())
+            .collect();
+
+        let mut group_pids: HashSet<u32> = HashSet::new();
+        for process in &process_snapshot.processes {
+            if !worth_grouping(process, listening_pids.contains(&process.pid)) {
+                continue;
+            }
+            group_pids.insert(process.pid);
+            if let Some(parent) = process.parent_pid {
+                // A listener with no readable cwd inherits its parent's project.
+                group_pids.insert(parent);
+            }
+        }
+
         let grouping_inputs: Vec<GroupingInput> = process_snapshot
             .processes
             .iter()
+            .filter(|p| group_pids.contains(&p.pid))
             .map(|p| GroupingInput {
                 pid: p.pid,
                 parent_pid: p.parent_pid,
@@ -439,6 +462,29 @@ impl SnapshotLoop {
     }
 }
 
+/// Whether a process is worth walking a filesystem tree for.
+///
+/// Listeners always are: a port is a service. Everything else must look like
+/// developer software rather than a shell, a compiler, or a process the OS
+/// would not identify. Parent PIDs of those candidates are added separately so
+/// a listener with no cwd can still inherit a project.
+fn worth_grouping(process: &ObservedProcess, listening: bool) -> bool {
+    if listening {
+        return true;
+    }
+    let Some(cwd) = process.cwd.as_deref() else {
+        return false;
+    };
+    if is_bundled_app(cwd) {
+        return false;
+    }
+    match process.executable.as_deref() {
+        None => false,
+        Some(exe) if is_system_tool(exe) || is_build_tool(exe) || is_bundled_app(exe) => false,
+        Some(_) => true,
+    }
+}
+
 /// Name the missing fields the way `/status` reports them. Only non-zero
 /// counts are reported: an empty map means nothing was degraded.
 fn degraded_fields(d: &devpulse_discovery::process::Degradations) -> BTreeMap<String, usize> {
@@ -496,5 +542,73 @@ mod tests {
         assert!(result.collector_duration_ms > 0);
         // Registry may be empty if no processes are grouped, but should not panic
         let _ = loop_.registry().services().count();
+    }
+
+    #[test]
+    fn shells_and_compilers_are_not_grouped() {
+        let shell = ObservedProcess {
+            pid: 1,
+            parent_pid: Some(0),
+            name: "zsh".into(),
+            executable: Some("/bin/zsh".into()),
+            command: vec!["zsh".into()],
+            cwd: Some("/Users/dev/app".into()),
+            cpu_percent: 0.0,
+            memory_bytes: 0,
+            virtual_memory_bytes: 0,
+            start_time_epoch_secs: 1,
+            run_time_secs: 600,
+            state: devpulse_discovery::process::ProcessState::Sleeping,
+            user_id: None,
+        };
+        assert!(!worth_grouping(&shell, false));
+        assert!(
+            worth_grouping(&shell, true),
+            "a listening shell is a service"
+        );
+    }
+
+    fn observed(exe: &str, cwd: &str) -> ObservedProcess {
+        ObservedProcess {
+            pid: 10,
+            parent_pid: Some(1),
+            name: "app".into(),
+            executable: Some(exe.into()),
+            command: vec!["app".into()],
+            cwd: Some(cwd.into()),
+            cpu_percent: 0.0,
+            memory_bytes: 0,
+            virtual_memory_bytes: 0,
+            start_time_epoch_secs: 1,
+            run_time_secs: 600,
+            state: devpulse_discovery::process::ProcessState::Sleeping,
+            user_id: None,
+        }
+    }
+
+    #[test]
+    fn bundled_apps_are_not_grouped_unless_listening() {
+        let chrome = observed(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Users/dev",
+        );
+        assert!(!worth_grouping(&chrome, false));
+        assert!(
+            worth_grouping(&chrome, true),
+            "a listening app bundle is still a service"
+        );
+
+        let helper_cwd = observed(
+            "/Users/dev/project/target/debug/worker",
+            "/Applications/Some.app/Contents/Resources",
+        );
+        assert!(!worth_grouping(&helper_cwd, false));
+        assert!(worth_grouping(&helper_cwd, true));
+
+        let project_worker = observed(
+            "/Users/dev/project/target/debug/worker",
+            "/Users/dev/project",
+        );
+        assert!(worth_grouping(&project_worker, false));
     }
 }

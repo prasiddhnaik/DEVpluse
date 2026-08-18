@@ -52,3 +52,12 @@ tokio-tungstenite = "0.29.0"
 [profile.release]
 lto = "thin"
 strip = true
+
+# Debug DevPulse stays unoptimized so the daemon is easy to step through.
+# These two crates dominate collector CPU in `cargo run`; compiling them
+# optimized cuts process/socket snapshot time without a full release build.
+[profile.dev.package.sysinfo]
+opt-level = 3
+
+[profile.dev.package.netstat2]
+opt-level = 3

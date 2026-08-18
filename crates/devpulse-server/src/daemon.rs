@@ -3,12 +3,14 @@
 //! Binds loopback, runs the snapshot loop on a timer, and serves the API from
 //! the state that loop produces.
 
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, bail};
+use devpulse_core::ids::ProjectId;
 use devpulse_discovery::watcher::ProjectWatcher;
 use devpulse_docker::availability::DockerAvailability;
 use devpulse_docker::collector::{BollardCollector, ContainerCollector};
@@ -253,9 +255,22 @@ fn spawn_snapshot_loop(params: LoopParams) -> JoinHandle<()> {
         // next one is simply late (`AGENTS.md` rule 7).
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_retention = SystemTime::now();
+        let mut idle_skips = 0u32;
+        let mut persist_tick = 0u32;
+        let mut persisted_projects: BTreeSet<ProjectId> = BTreeSet::new();
 
         loop {
             ticker.tick().await;
+
+            // No dashboard attached: keep observing, just not at 1 Hz. Tests
+            // use a sub-second interval and must not be stretched.
+            if interval >= Duration::from_secs(1) && state.ws_subscribers() == 0 {
+                idle_skips += 1;
+                if idle_skips < IDLE_TICKS {
+                    continue;
+                }
+            }
+            idle_skips = 0;
 
             let tick = match snapshot.tick().await {
                 Ok(tick) => tick,
@@ -329,15 +344,29 @@ fn spawn_snapshot_loop(params: LoopParams) -> JoinHandle<()> {
                 .await;
 
             if let Some(persistence) = &persistence {
-                // Only services the delta touched are written: rewriting every
-                // service every second would be a write per service per tick
-                // for rows that did not change.
+                persist_tick = persist_tick.wrapping_add(1);
+                let new_projects: Vec<_> = projects
+                    .values()
+                    .filter(|project| persisted_projects.insert(project.id.clone()))
+                    .cloned()
+                    .collect();
+                // In-memory sparklines stay at 1 Hz; SQLite does not need a
+                // row per service per second.
+                let samples = if persist_tick % SAMPLE_PERSIST_EVERY == 1 {
+                    tick.samples.clone()
+                } else {
+                    Vec::new()
+                };
                 persistence.write(TickWrite {
-                    projects: projects.values().cloned().collect(),
+                    projects: new_projects,
                     services: changed_services,
                     events: stored_events,
-                    samples: tick.samples.clone(),
-                    warnings: applied.warnings.clone(),
+                    samples,
+                    warnings: if applied.warnings_changed {
+                        applied.warnings.clone()
+                    } else {
+                        Vec::new()
+                    },
                 });
 
                 if at
@@ -367,6 +396,14 @@ fn spawn_snapshot_loop(params: LoopParams) -> JoinHandle<()> {
 /// branch must not turn into thousands of events; the developer needs to know
 /// files changed, not which two thousand.
 const MAX_FILE_EVENTS_PER_TICK: usize = 20;
+
+/// When nobody is listening on the WebSocket, collect once every N wakeups
+/// instead of every interval. Opening the dashboard resumes full rate within
+/// one interval.
+const IDLE_TICKS: u32 = 5;
+
+/// Persist resource samples every N ticks. The in-memory ring is still 1 Hz.
+const SAMPLE_PERSIST_EVERY: u32 = 5;
 
 /// Ids the registry reported as changed this tick, in one sorted set.
 fn changed_service_ids(
