@@ -1,0 +1,24 @@
+[package]
+name = "runscape-docker"
+description = "Runscape Docker inspection via Bollard. Optional at runtime."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+runscape-core.workspace = true
+
+async-trait.workspace = true
+bollard.workspace = true
+futures-util.workspace = true
+serde = { workspace = true }
+thiserror.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+
+[dev-dependencies]
+# The fake-daemon integration test speaks HTTP over a unix socket.
+tempfile.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }

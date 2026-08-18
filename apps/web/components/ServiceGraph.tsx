@@ -13,10 +13,10 @@
  *
  * Evidence is rendered, never hidden (`AGENTS.md` rule 4): an edge that is
  * inferred or below full confidence is dashed and labelled, so it can never be
- * mistaken for something DevPulse actually observed.
+ * mistaken for something Runscape actually observed.
  */
 
-import { useMemo } from "react";
+import { useMemo, type MouseEvent } from "react";
 
 import { bytes, healthStyle, percent } from "@/lib/format";
 import type { Connection, Service } from "@/lib/types";
@@ -26,6 +26,8 @@ const NODE_HEIGHT = 62;
 const COLUMN_GAP = 96;
 const ROW_GAP = 24;
 const PADDING = 16;
+/** Isolated nodes wrap rather than stacking into one tall column. */
+const WRAP_COLUMNS = 4;
 
 interface Placed {
   service: Service;
@@ -38,10 +40,15 @@ export function ServiceGraph({
   services,
   connections,
   selectedId,
+  onOpenService,
+  className = "w-fit max-w-full overflow-x-auto rounded-lg border border-line bg-surface p-2",
 }: {
   services: Service[];
   connections: Connection[];
   selectedId?: string;
+  /** Client navigation so the live socket is not torn down by a full page load. */
+  onOpenService?: (id: string) => void;
+  className?: string;
 }) {
   const { placed, width, height } = useMemo(
     () => layout(services, connections),
@@ -59,17 +66,18 @@ export function ServiceGraph({
   const byId = new Map(placed.map((node) => [node.service.id, node]));
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-line bg-surface-raised p-2">
+    <div className={className}>
       <svg
         width={width}
         height={height}
         viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="xMinYMin meet"
         role="img"
         aria-label="Service topology"
       >
         <defs>
           <marker
-            id="devpulse-arrow"
+            id="runscape-arrow"
             viewBox="0 0 10 10"
             refX="9"
             refY="5"
@@ -105,7 +113,7 @@ export function ServiceGraph({
                 strokeWidth={1.5}
                 strokeDasharray={solid ? undefined : "5 4"}
                 className={solid ? "stroke-zinc-400" : "stroke-amber-500"}
-                markerEnd="url(#devpulse-arrow)"
+                markerEnd="url(#runscape-arrow)"
               >
                 {/* One string: React renders `<title>` children as text and
                     cannot join an array, so a split title silently renders
@@ -134,20 +142,24 @@ export function ServiceGraph({
           const selected = service.id === selectedId;
 
           return (
-            <a key={service.id} href={`/services/${service.id}`}>
+            <a
+              key={service.id}
+              href={`/services/${service.id}`}
+              onClick={(event) => openService(event, service.id, onOpenService)}
+            >
               <g transform={`translate(${x} ${y})`} className="cursor-pointer">
                 <rect
                   width={NODE_WIDTH}
                   height={NODE_HEIGHT}
                   rx={10}
-                  className={`fill-surface stroke-line ${selected ? "stroke-sky-500" : ""}`}
+                  className={`fill-surface-raised stroke-line ${selected ? "stroke-accent" : ""}`}
                   strokeWidth={selected ? 2 : 1}
                 />
                 <circle cx={16} cy={20} r={4} className={style.svg} />
                 <text
                   x={28}
                   y={24}
-                  className="fill-zinc-900 text-[13px] font-medium dark:fill-zinc-100"
+                  className="fill-ink text-[13px] font-medium"
                 >
                   {truncate(service.name, 18)}
                 </text>
@@ -204,6 +216,20 @@ function layout(services: Service[], connections: Connection[]) {
     columns.set(column, bucket);
   }
 
+  // No edges means every node lands in column 0. Wrap into a grid so ten
+  // isolated services are a board, not a 800px strip down the left margin.
+  if (columns.size === 1 && edges.length === 0) {
+    const items = columns.get(0) ?? [];
+    const wrapCols = Math.min(WRAP_COLUMNS, Math.max(1, items.length));
+    columns.clear();
+    items.forEach((service, index) => {
+      const column = index % wrapCols;
+      const bucket = columns.get(column) ?? [];
+      bucket.push(service);
+      columns.set(column, bucket);
+    });
+  }
+
   const placed: Placed[] = [];
   for (const [column, bucket] of [...columns.entries()].sort((a, b) => a[0] - b[0])) {
     bucket.forEach((service, row) => {
@@ -216,12 +242,33 @@ function layout(services: Service[], connections: Connection[]) {
     });
   }
 
+  const columnCount = Math.max(columns.size, 1);
   const width =
-    PADDING * 2 + (columns.size - 1) * (NODE_WIDTH + COLUMN_GAP) + NODE_WIDTH;
+    PADDING * 2 + (columnCount - 1) * (NODE_WIDTH + COLUMN_GAP) + NODE_WIDTH;
   const tallest = Math.max(...[...columns.values()].map((bucket) => bucket.length), 1);
   const height = PADDING * 2 + tallest * NODE_HEIGHT + (tallest - 1) * ROW_GAP;
 
-  return { placed, width: Math.max(width, 320), height };
+  return { placed, width, height };
+}
+
+function openService(
+  event: MouseEvent<Element>,
+  id: string,
+  onOpenService?: (id: string) => void,
+) {
+  if (
+    !onOpenService ||
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.shiftKey
+  ) {
+    return;
+  }
+  event.preventDefault();
+  onOpenService(id);
 }
 
 /** The evidence behind an edge, in one line, for the hover title. */

@@ -1,6 +1,6 @@
 /** Display helpers. Formatting only — nothing here decides anything. */
 
-import type { DevPulseEvent, EventKind, Health, Severity } from "./types";
+import type { RunscapeEvent, EventKind, Health, Severity } from "./types";
 
 export function bytes(value: number): string {
   const units = [
@@ -19,6 +19,16 @@ export function bytes(value: number): string {
 
 export function percent(value: number): string {
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)}%`;
+}
+
+/** Load averages are dimensionless; two decimals is what `uptime` prints. */
+export function loadAvg(value: number): string {
+  return value.toFixed(2);
+}
+
+/** Disk I/O on a ResourceSample is a per-tick delta, not a lifetime total. */
+export function bytesPerTick(value: number): string {
+  return `${bytes(value)} / tick`;
 }
 
 export function ago(iso: string, now = Date.now()): string {
@@ -82,15 +92,15 @@ export const healthStyle: Record<
 };
 
 export const severityStyle: Record<Severity, string> = {
-  info: "border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-200",
+    info: "border-indigo-800 bg-indigo-950 text-indigo-200",
   warning:
-    "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200",
+    "border-amber-800 bg-amber-950 text-amber-200",
   critical:
-    "border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-200",
+    "border-rose-800 bg-rose-950 text-rose-200",
 };
 
 /** One line of English for an event. The daemon's `kind` is the source. */
-export function describeEvent(event: DevPulseEvent, nameOf: (id: string) => string): string {
+export function describeEvent(event: RunscapeEvent, nameOf: (id: string) => string): string {
   const kind: EventKind = event.kind;
   switch (kind.type) {
     case "project_detected":
@@ -129,7 +139,7 @@ export function describeEvent(event: DevPulseEvent, nameOf: (id: string) => stri
 }
 
 /** Event kinds worth colouring differently in a timeline. */
-export function eventTone(event: DevPulseEvent): string {
+export function eventTone(event: RunscapeEvent): string {
   switch (event.kind.type) {
     case "service_started":
       return "bg-emerald-500";

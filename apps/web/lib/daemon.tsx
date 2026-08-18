@@ -23,10 +23,18 @@ import {
   useState,
 } from "react";
 
-import { DAEMON_WS } from "./api";
+import { daemonWs } from "./api";
+import {
+  DEMO_CONNECTION,
+  DEMO_EVENTS,
+  DEMO_PROJECT,
+  DEMO_SERVICES,
+  DEMO_STATUS,
+  isDemoMode,
+} from "./demo";
 import type {
   Connection,
-  DevPulseEvent,
+  RunscapeEvent,
   ProjectSummary,
   ServerFrame,
   Service,
@@ -36,7 +44,7 @@ import type {
 
 export type ConnectionState = "connecting" | "connected" | "reconnecting" | "disconnected";
 
-/** UI: "local pulse worker" = the local DevPulse daemon (`devpulse serve`). Never show "daemon" in the dashboard. */
+/** UI: "local pulse worker" = the local Runscape daemon (`runscape serve`). Never show "daemon" in the dashboard. */
 export function localPulseWorker(): string {
   return "local pulse worker";
 }
@@ -57,7 +65,7 @@ export interface DaemonView {
   connections: Connection[];
   warnings: Warning[];
   /** Newest first. */
-  events: DevPulseEvent[];
+  events: RunscapeEvent[];
   /** When the last frame arrived. */
   lastFrameAt: string | null;
   /** Ask the daemon for a fresh snapshot. */
@@ -76,6 +84,21 @@ const empty: DaemonView = {
   lastFrameAt: null,
   resnapshot: () => {},
 };
+
+function demoView(): DaemonView {
+  return {
+    connection: "connected",
+    reconnects: 0,
+    status: DEMO_STATUS,
+    projects: [DEMO_PROJECT],
+    services: DEMO_SERVICES,
+    connections: [DEMO_CONNECTION],
+    warnings: [],
+    events: [...DEMO_EVENTS].reverse(),
+    lastFrameAt: DEMO_STATUS.host?.at ?? null,
+    resnapshot: () => {},
+  };
+}
 
 const DaemonContext = createContext<DaemonView>(empty);
 
@@ -101,14 +124,22 @@ export function useProject(projectId: string): ProjectSummary | null {
 }
 
 export function DaemonProvider({ children }: { children: React.ReactNode }) {
-  const [view, setView] = useState<DaemonView>(empty);
+  const [view, setView] = useState<DaemonView>(() =>
+    process.env.NEXT_PUBLIC_RUNSCAPE_DEMO === "1" ? demoView() : empty,
+  );
   const socket = useRef<WebSocket | null>(null);
 
   const resnapshot = useCallback(() => {
+    if (isDemoMode()) return;
     socket.current?.send(JSON.stringify({ type: "resnapshot" }));
   }, []);
 
   useEffect(() => {
+    if (isDemoMode()) {
+      setView(demoView());
+      return;
+    }
+
     let closed = false;
     let attempt = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -120,7 +151,7 @@ export function DaemonProvider({ children }: { children: React.ReactNode }) {
     const connect = () => {
       if (closed) return;
 
-      const ws = new WebSocket(DAEMON_WS);
+      const ws = new WebSocket(daemonWs());
       socket.current = ws;
 
       ws.onopen = () => {

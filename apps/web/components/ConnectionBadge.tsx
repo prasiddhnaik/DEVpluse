@@ -4,7 +4,7 @@ import { localPulseWorker, useDaemon } from "@/lib/daemon";
 
 /**
  * Local pulse worker connection state (task T4.2). Internally this is the
- * daemon (`devpulse serve`); the UI never uses that word.
+ * daemon (`runscape serve`); the UI never uses that word.
  *
  * A dashboard that silently shows stale data is worse than one that admits it
  * is disconnected, so this is always visible and never optimistic.

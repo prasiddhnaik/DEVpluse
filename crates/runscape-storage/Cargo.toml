@@ -1,0 +1,20 @@
+[package]
+name = "runscape-storage"
+description = "Runscape local SQLite persistence."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+runscape-core.workspace = true
+
+rusqlite.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

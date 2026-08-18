@@ -1,11 +1,12 @@
 {
-  "name": "@devpulse/web",
+  "name": "@runscape/web",
   "version": "0.1.0",
   "private": true,
-  "description": "DevPulse dashboard: renders what the daemon observed. It never derives runtime truth itself (AGENTS.md rule 8).",
+  "description": "Runscape dashboard: renders what the daemon observed. It never derives runtime truth itself (AGENTS.md rule 8).",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "export:daemon": "next build && rm -rf ../../crates/runscape-server/dashboard && mkdir -p ../../crates/runscape-server/dashboard && cp -R out/. ../../crates/runscape-server/dashboard/",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"

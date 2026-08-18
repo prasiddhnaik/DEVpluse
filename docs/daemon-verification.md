@@ -20,7 +20,7 @@ A scratch project (`git init` + `package.json`), a fixture TCP server on
 41001, a fixture TCP client holding a connection, and the daemon:
 
 ```bash
-devpulse serve --port 7788 --no-docker --interval 1
+runscape serve --port 7788 --no-docker --interval 1
 ```
 
 Observed through the API:
@@ -57,8 +57,8 @@ in `/status` rather than hidden.
 
 * Warnings are always empty — the rule engine is Milestone 7.
 * Docker containers are probed for availability but not yet folded into the
-  service graph; `devpulse-docker` has the collector, the snapshot loop does
+  service graph; `runscape-docker` has the collector, the snapshot loop does
   not call it yet (Milestone 6 wiring).
-* SQLite persistence exists in `devpulse-storage` but the daemon keeps events
+* SQLite persistence exists in `runscape-storage` but the daemon keeps events
   in a 2000-entry memory ring only (Milestone 5 wiring).
 * Health is derived from liveness only; there are no HTTP health probes.

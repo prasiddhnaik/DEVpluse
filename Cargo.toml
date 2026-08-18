@@ -1,13 +1,13 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/devpulse-core",
-    "crates/devpulse-discovery",
-    "crates/devpulse-events",
-    "crates/devpulse-storage",
-    "crates/devpulse-docker",
-    "crates/devpulse-server",
-    "crates/devpulse-cli",
+    "crates/runscape-core",
+    "crates/runscape-discovery",
+    "crates/runscape-events",
+    "crates/runscape-storage",
+    "crates/runscape-docker",
+    "crates/runscape-server",
+    "crates/runscape-cli",
     "fixtures",
 ]
 
@@ -19,12 +19,12 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-devpulse-core = { path = "crates/devpulse-core" }
-devpulse-discovery = { path = "crates/devpulse-discovery" }
-devpulse-events = { path = "crates/devpulse-events" }
-devpulse-storage = { path = "crates/devpulse-storage" }
-devpulse-docker = { path = "crates/devpulse-docker" }
-devpulse-server = { path = "crates/devpulse-server" }
+runscape-core = { path = "crates/runscape-core" }
+runscape-discovery = { path = "crates/runscape-discovery" }
+runscape-events = { path = "crates/runscape-events" }
+runscape-storage = { path = "crates/runscape-storage" }
+runscape-docker = { path = "crates/runscape-docker" }
+runscape-server = { path = "crates/runscape-server" }
 
 anyhow = "1.0.104"
 async-trait = "0.1.92"
@@ -35,6 +35,7 @@ futures-util = "0.3.34"
 notify = "8.2.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 tower-http = { version = "0.7.0", features = ["cors", "trace"] }
+rust-embed = "8.9.0"
 netstat2 = "0.11.2"
 regex = "1.11"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -53,7 +54,7 @@ tokio-tungstenite = "0.29.0"
 lto = "thin"
 strip = true
 
-# Debug DevPulse stays unoptimized so the daemon is easy to step through.
+# Debug Runscape stays unoptimized so the daemon is easy to step through.
 # These two crates dominate collector CPU in `cargo run`; compiling them
 # optimized cuts process/socket snapshot time without a full release build.
 [profile.dev.package.sysinfo]

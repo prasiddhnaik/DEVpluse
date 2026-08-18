@@ -1,11 +1,11 @@
 /**
  * Contract check against a *running* daemon.
  *
- * Skipped when nothing is listening on 7778, so `bun test` stays useful without
+ * Skipped when nothing is listening on 2013, so `bun test` stays useful without
  * one. When a daemon is up, this is what proves the dashboard and the daemon
  * still agree — a TypeScript type is a claim, and this is the check.
  *
- * Run it with: `devpulse serve` in one terminal, `bun test` in another.
+ * Run it with: `runscape serve` in one terminal, `bun test` in another.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -38,6 +38,10 @@ live("a running daemon", () => {
       expect(project.id).toStartWith("prj_");
       expect(["healthy", "degraded", "stopped", "unknown"]).toContain(project.health);
       expect(project.service_count).toBeGreaterThanOrEqual(project.running_service_count);
+      if (project.running_service_count > 0) {
+        expect(Array.isArray(project.ranked_by_cpu ?? [])).toBe(true);
+        expect(Array.isArray(project.ranked_by_memory ?? [])).toBe(true);
+      }
     }
   });
 

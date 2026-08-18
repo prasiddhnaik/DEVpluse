@@ -20,9 +20,9 @@ domain model on. Proceed to Milestone 1.
 
 | Crate | Contents |
 | --- | --- |
-| `crates/devpulse-core` | project-root resolver with evidence + confidence; secret redaction |
-| `crates/devpulse-discovery` | `ProcessCollector` / `SocketCollector` traits, `sysinfo` and `netstat2` implementations, platform capability matrix |
-| `crates/devpulse-cli` | `scan-processes`, `scan-sockets`, `scan-projects`, `resolve-project`, `bench`, `capabilities` |
+| `crates/runscape-core` | project-root resolver with evidence + confidence; secret redaction |
+| `crates/runscape-discovery` | `ProcessCollector` / `SocketCollector` traits, `sysinfo` and `netstat2` implementations, platform capability matrix |
+| `crates/runscape-cli` | `scan-processes`, `scan-sockets`, `scan-projects`, `resolve-project`, `bench`, `capabilities` |
 | `fixtures` | `fixture-tcp-server`, `fixture-tcp-client`, integration tests I1/I2 |
 
 Implementation choice: socket discovery uses `netstat2`, which calls `libproc`
@@ -36,9 +36,9 @@ belong to the current user:
 
 ```text
     PID    PPID   CPU%       MEM   UPTIME  NAME                 CWD                               EXECUTABLE
-  76444   71309    0.0      8.3M    4m31s  Python               /private/tmp/devpulse-spike/api   …/Python.app/Contents/MacOS/Python
-  76466   71309    0.0     36.6M    4m24s  node                 /private/tmp/devpulse-spike/web   /opt/homebrew/bin/node
-  76495   71309    0.0      1.2M    4m13s  fixture-tcp-server   /private/tmp/devpulse-spike       …/target/release/fixture-tcp-server
+  76444   71309    0.0      8.3M    4m31s  Python               /private/tmp/runscape-spike/api   …/Python.app/Contents/MacOS/Python
+  76466   71309    0.0     36.6M    4m24s  node                 /private/tmp/runscape-spike/web   /opt/homebrew/bin/node
+  76495   71309    0.0      1.2M    4m13s  fixture-tcp-server   /private/tmp/runscape-spike       …/target/release/fixture-tcp-server
 ```
 
 Inaccessible processes degrade instead of failing. On a typical run:
@@ -63,19 +63,19 @@ a warm-up value for an idle process.
 ### Against `lsof` ground truth
 
 Every listening TCP port that `lsof -nP -iTCP -sTCP:LISTEN` attributes to a PID
-is attributed to the same PID by DevPulse:
+is attributed to the same PID by Runscape:
 
 ```text
 ports agreeing on PID: 12/12
 PID mismatches:  none
 in lsof only:    none
-in devpulse only: none
+in runscape only: none
 sockets with undisclosed owner: 0
 ```
 
 ### Against the kernel's full socket table
 
-`netstat -an -p tcp` sees 15 distinct listening ports; DevPulse (unprivileged)
+`netstat -an -p tcp` sees 15 distinct listening ports; Runscape (unprivileged)
 sees 12. The three missing ports — 53, 8021, 49173 — are owned by other users'
 (root) processes.
 
@@ -112,12 +112,12 @@ A three-runtime fixture project groups correctly from working-directory evidence
 alone:
 
 ```text
-devpulse-spike [git-repository] confidence 0.95
-  root      /private/tmp/devpulse-spike
+runscape-spike [git-repository] confidence 0.95
+  root      /private/tmp/runscape-spike
   processes Python(76444), node(76466), fixture-tcp-server(76495)
   listening 41010, 41011, 41012
-  evidence  git root at /private/tmp/devpulse-spike/.git;
-            node-workspace workspace at /private/tmp/devpulse-spike/package.json
+  evidence  git root at /private/tmp/runscape-spike/.git;
+            node-workspace workspace at /private/tmp/runscape-spike/package.json
 ```
 
 Two false positives were found and fixed during the spike:
@@ -130,7 +130,7 @@ Two false positives were found and fixed during the spike:
 
 ## Collector timing
 
-`devpulse bench --iterations 30`, release build, 569 processes / 54 sockets:
+`runscape bench --iterations 30`, release build, 569 processes / 54 sockets:
 
 | Collector | min | p50 | max | budget (`ARCHITECTURE.md`) | duty cycle at p50 |
 | --- | --- | --- | --- | --- | --- |
@@ -147,7 +147,7 @@ The integration suite asserts a 250 ms ceiling per snapshot to catch regressions
 
 **None.** No sudo, no entitlement, no kernel extension, no TCC prompt was
 required for anything above. Running as root would only widen *coverage* to
-other users' processes and sockets; it does not change accuracy. DevPulse should
+other users' processes and sockets; it does not change accuracy. Runscape should
 ship unprivileged by default and treat the root-owned slice as invisible rather
 than requesting elevation.
 
@@ -203,17 +203,17 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace          # 47 tests
 
-cargo run --release -p devpulse-cli -- capabilities
-cargo run --release -p devpulse-cli -- scan-processes --filter node
-cargo run --release -p devpulse-cli -- scan-sockets --listening
-cargo run --release -p devpulse-cli -- scan-projects
-cargo run --release -p devpulse-cli -- bench --iterations 30
+cargo run --release -p runscape-cli -- capabilities
+cargo run --release -p runscape-cli -- scan-processes --filter node
+cargo run --release -p runscape-cli -- scan-sockets --listening
+cargo run --release -p runscape-cli -- scan-projects
+cargo run --release -p runscape-cli -- bench --iterations 30
 ```
 
 Fixture-based verification:
 
 ```bash
-cargo test -p devpulse-fixtures --test discovery
+cargo test -p runscape-fixtures --test discovery
 ```
 
 ## Gate decision

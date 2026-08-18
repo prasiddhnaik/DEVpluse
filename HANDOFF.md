@@ -1,4 +1,4 @@
-# DevPulse handoff — 2026-08-18 (release gate)
+# Runscape handoff — 2026-08-18 (release gate)
 
 Continuation of the earlier handoff from the same day. Working tree is still
 uncommitted (repo HEAD is `542cbec`; the original session started at `1596b2f`).
@@ -28,16 +28,16 @@ cargo test --workspace                                   # 276 passed
 cd apps/web && bun test                                  # 25 pass, 6 skip
 ```
 
-Live `lib/live.test.ts` skips when nothing is on 7778. The daemon was up
+Live `lib/live.test.ts` skips when nothing is on 2013. The daemon was up
 during the browser pass; it had exited by the time bun test was re-run.
 
 ## What changed after the previous handoff
 
 1. Live filter verification (the previous session talked to a stale binary).
-   Kill with `pkill -f "debug/devpulse"`, not `-f "devpulse serve"`.
-2. `STOPPED_PORTLESS_RETENTION` (90s) in `crates/devpulse-core/src/registry.rs`.
+   Kill with `pkill -f "debug/runscape"`, not `-f "runscape serve"`.
+2. `STOPPED_PORTLESS_RETENTION` (90s) in `crates/runscape-core/src/registry.rs`.
    Listeners and containers keep the 256 cap. Tests in that file.
-3. `project_health` in `crates/devpulse-server/src/dto.rs` — running services
+3. `project_health` in `crates/runscape-server/src/dto.rs` — running services
    decide the card; an empty running set with stopped leftovers is `stopped`.
 4. `agentRules: false` in `apps/web/next.config.ts` so `next dev` stops
    writing `AGENTS.md` / `CLAUDE.md` into the app.
@@ -61,14 +61,14 @@ plus SQL). Live verification above is the coverage for those. Hubs:
 Started for this verification; safe to kill:
 
 ```bash
-pkill -f "debug/devpulse"
+pkill -f "debug/runscape"
 pkill -f fixture-tcp
 pkill -f "http.server 41003"
 pkill -f "next dev"
 ```
 
-Scratch fixtures live in `/tmp/devpulse-release/{stack-py,stack-tcp}`.
-History DB is `/tmp/devpulse-check.db`. Default `~/.devpulse/devpulse.db`
+Scratch fixtures live in `/tmp/runscape-release/{stack-py,stack-tcp}`.
+History DB is `/tmp/runscape-check.db`. Default `~/.runscape/runscape.db`
 was not touched.
 
 ## Committing

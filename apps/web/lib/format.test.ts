@@ -2,12 +2,12 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { ago, bytes, describeEvent, offset, percent, shortenPath } from "./format";
-import type { DevPulseEvent } from "./types";
+import { ago, bytes, bytesPerTick, describeEvent, offset, percent, shortenPath, loadAvg } from "./format";
+import type { RunscapeEvent } from "./types";
 
 const nameOf = (id: string) => (id === "svc_a" ? "web" : id);
 
-function event(kind: DevPulseEvent["kind"]): DevPulseEvent {
+function event(kind: RunscapeEvent["kind"]): RunscapeEvent {
   return { id: "evt_1", at: "2026-08-18T10:00:00Z", project_id: "prj_1", kind };
 }
 
@@ -22,6 +22,15 @@ describe("units", () => {
   test("percentages keep one decimal only while it matters", () => {
     expect(percent(0.42)).toBe("0.4%");
     expect(percent(94.6)).toBe("95%");
+  });
+
+  test("load averages match the uptime convention", () => {
+    expect(loadAvg(1.4)).toBe("1.40");
+    expect(loadAvg(0)).toBe("0.00");
+  });
+
+  test("disk deltas are labelled as per-tick, never lifetime totals", () => {
+    expect(bytesPerTick(2048)).toBe("2.0 KB / tick");
   });
 
   test("offsets are signed, because before and after is the point", () => {

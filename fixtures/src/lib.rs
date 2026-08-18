@@ -1,4 +1,4 @@
-//! Deterministic fixture processes for DevPulse discovery tests.
+//! Deterministic fixture processes for Runscape discovery tests.
 //!
 //! Discovery must not be tested only against whatever happens to be running on
 //! a developer's machine (see `TEST_PLAN.md`). These binaries provide processes

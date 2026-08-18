@@ -23,16 +23,16 @@ inside a sandbox that cannot deliver FSEvents; it passes on the real machine
 The pre-filter daemon counted `sleep`, `zsh`, `cargo`, `rustc`, `ld` as
 services. A `sleep` that recurred in the same directory produced
 `restart_loop: sleep restarted 6 times`. The filter in
-`crates/devpulse-core/src/service_filter.rs` is: a listening process is always
+`crates/runscape-core/src/service_filter.rs` is: a listening process is always
 a service; anything else must not be an OS tool, must not be a compiler or
 build driver, and must have been alive for 30 seconds.
 
-Verified against a **fresh** `target/debug/devpulse` (not a stale binary
+Verified against a **fresh** `target/debug/runscape` (not a stale binary
 holding port 7778). After a clean start:
 
 ```text
 3 projects
-  DEVpluse    6/6  healthy   this repo (devpulse :7778, node :3000, bun, …)
+  Runscape    6/6  healthy   this repo (runscape :7778, node :3000, bun, …)
   stack-tcp   2/2  healthy   fixture-tcp-server :41001 + fixture-tcp-client
   stack-py    1/1  healthy   Python :41003
 ```
@@ -62,7 +62,7 @@ helper no longer paints a live project as stopped.
 | --- | --- | --- |
 | Rust fixtures | `fixture-tcp-server :41001` + client holding the socket | Own git project. Solid `observed_socket` edge, confidence 1.0, port 41001. |
 | Python | `python3 -m http.server 41003` in a scratch git repo | Own git project, runtime `python`, listening on 41003. |
-| This repo | `devpulse serve` + Next.js `bun run dev` | Grouped as `DEVpluse`. Daemon on 7778, dashboard on 3000. |
+| This repo | `runscape serve` + Next.js `bun run dev` | Grouped as `Runscape`. Daemon on 7778, dashboard on 3000. |
 
 A Node stack (`stack-node` on 41004) and a second Rust fixture pair were
 verified in the same working tree earlier the same day, including secret
@@ -105,7 +105,7 @@ badge reads `connected`. `next start` does not double-mount.
 
 This machine has no Docker daemon (`/var/run/docker.sock` does not exist).
 `/status` reports `available: false` with that reason. M6 is covered by unit
-tests and `crates/devpulse-server/tests/containers.rs` (fake collector). It
+tests and `crates/runscape-server/tests/containers.rs` (fake collector). It
 has not run against a Compose stack (`fixture-api`, `fixture-postgres`,
 `fixture-redis` in `TEST_PLAN.md` I6).
 

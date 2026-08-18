@@ -7,11 +7,11 @@
 use std::process::Stdio;
 use std::time::Duration;
 
-use devpulse_discovery::{
+use runscape_discovery::{
     Netstat2SocketCollector, ProcessCollector, SocketCollector, SocketSnapshot,
     SysinfoProcessCollector,
 };
-use devpulse_fixtures::ready_field;
+use runscape_fixtures::ready_field;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
@@ -118,7 +118,7 @@ where
     }
 }
 
-/// I1 — the PID that opened a port is the PID DevPulse reports.
+/// I1 — the PID that opened a port is the PID Runscape reports.
 #[tokio::test]
 async fn i1_listening_port_is_attributed_to_the_owning_pid() {
     let server = Fixture::spawn(server_bin(), &["--port", "0", "--lifetime-secs", "30"]).await;
@@ -142,7 +142,7 @@ async fn i1_listening_port_is_attributed_to_the_owning_pid() {
 }
 
 /// I2 — a local client/server pair is observed from both ends, with the correct
-/// PID on each side. This is the evidence that DevPulse can build topology from
+/// PID on each side. This is the evidence that Runscape can build topology from
 /// `observed_socket` without inference.
 #[tokio::test]
 async fn i2_local_connection_is_observed_from_both_ends() {

@@ -36,7 +36,7 @@ struct Args {
     lifetime_secs: u64,
 
     /// Bytes written to every accepted connection.
-    #[arg(long, default_value = "devpulse-fixture\n")]
+    #[arg(long, default_value = "runscape-fixture\n")]
     response: String,
 }
 

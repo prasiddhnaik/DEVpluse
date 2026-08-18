@@ -1,16 +1,15 @@
-# DevPulse
+# Runscape
 
 Run one command and see what your local code is already doing — the processes,
 the ports, the containers, how they talk to each other, and what changed just
 before something broke.
 
 ```bash
-devpulse serve          # the daemon: discovery + local API on 127.0.0.1:7778
-devpulse serve --headless   # same, JSON ready line, no dashboard needed
-cd apps/web && bun dev  # the dashboard: http://localhost:3000
+runscape serve              # visual dashboard at http://localhost:2013
+runscape serve --headless   # same process, JSON ready line, no browser
 ```
 
-No configuration, no agent to install in your app, no account. DevPulse reads
+No configuration, no agent to install in your app, no account. Runscape reads
 what the operating system already knows about your own processes and groups it
 into projects.
 
@@ -35,7 +34,7 @@ Coding agents should use [`docs/for-agents.md`](docs/for-agents.md).
   file changes, plus deterministic rules for restart loops, sustained CPU,
   one-way memory growth, degraded health and port conflicts.
 * **What changed** — click any event to see what happened around it, labelled
-  with *why* it is related. DevPulse states adjacency; it never claims cause.
+  with *why* it is related. Runscape states adjacency; it never claims cause.
 
 ## What it is not
 
@@ -45,12 +44,22 @@ packet sniffer. It observes and reports; it starts and stops nothing
 
 ## Install and run
 
-Requires a stable Rust toolchain (1.85+) and, for the dashboard, Bun.
+Requires a stable Rust toolchain (1.85+). The visual dashboard is baked into
+the binary.
 
 ```bash
-cargo build --release
-./target/release/devpulse serve
+cargo install --git https://github.com/prasiddhnaik/DEVpluse runscape-cli
+runscape serve
 ```
+
+That opens http://localhost:2013. From a clone:
+
+```bash
+cargo install --path crates/runscape-cli --locked
+runscape serve
+```
+
+Not on crates.io yet (`publish = false`). Install from git or from this repo.
 
 Useful flags:
 
@@ -58,28 +67,37 @@ Useful flags:
 | --- | --- |
 | `--port <n>` | Listen on another port. The address is always loopback. |
 | `--interval <secs>` | Snapshot interval. Default 1s. |
-| `--db <path>` | History database. Default `~/.devpulse/devpulse.db`. |
+| `--db <path>` | History database. Default `~/.runscape/runscape.db`. |
 | `--no-persistence` | Keep history in memory only; write nothing to disk. |
 | `--no-docker` | Skip the Docker probe entirely. |
 | `--docker-stats` | Per-container CPU/memory. Costs ~1s per snapshot batch. |
-| `--headless` | Wait for the first snapshot, print one JSON ready line, serve without a dashboard. For agents: [`docs/for-agents.md`](docs/for-agents.md). |
+| `--headless` | Agent mode: wait for the first snapshot, print one JSON ready line, do not open a browser. The UI is still at `/`. See [`docs/for-agents.md`](docs/for-agents.md). |
+| `--no-open` | Do not open a browser when starting the visual dashboard. |
 
 The CLI also answers questions without the daemon:
 
 ```bash
-devpulse scan-processes      # what is running, with cwd, CPU, memory
-devpulse scan-sockets        # listening sockets and connections, with owning PIDs
-devpulse scan-projects       # how processes group into projects
-devpulse resolve-project .   # which project root a directory resolves to, and why
-devpulse capabilities        # what this OS will and will not disclose
-devpulse bench               # collector cost against the polling budget
+runscape scan-processes      # what is running, with cwd, CPU, memory
+runscape scan-sockets        # listening sockets and connections, with owning PIDs
+runscape scan-projects       # how processes group into projects
+runscape resolve-project .   # which project root a directory resolves to, and why
+runscape capabilities        # what this OS will and will not disclose
+runscape bench               # collector cost against the polling budget
 
 # against a running daemon (compact JSON, for agents)
-devpulse now --here          # this repo's projects, warnings, recent events
-devpulse watch               # NDJSON event/warning/service frames
+runscape now --here          # this repo's projects, warnings, recent events
+runscape watch               # NDJSON event/warning/service frames
 ```
 
 ## The dashboard
+
+`runscape serve` serves it at `http://localhost:2013` (same origin as the API).
+It renders what the daemon sends and computes no runtime facts of its own
+(`AGENTS.md` rule 8). The UI calls this process the **local pulse worker**;
+keep saying *daemon* in code, and never put "daemon" in user-visible strings.
+See the glossary in [`docs/for-developers.md`](docs/for-developers.md).
+
+To iterate on the React app without rebuilding the binary:
 
 ```bash
 cd apps/web
@@ -87,12 +105,10 @@ bun install
 bun dev
 ```
 
-It connects to `ws://127.0.0.1:7778/ws/v1`, renders what the daemon sends, and
-computes no runtime facts of its own (`AGENTS.md` rule 8). Point it at another
-daemon with `NEXT_PUBLIC_DEVPULSE_HTTP` and `NEXT_PUBLIC_DEVPULSE_WS`. The
-dashboard UI calls this process the **local pulse worker**; keep saying *daemon*
-in code, and never put "daemon" in user-visible strings. See the glossary in
-[`docs/for-developers.md`](docs/for-developers.md).
+That is http://localhost:3000, talking to a worker on 2013. After UI changes
+that should ship in `runscape serve`, run `bun run export:daemon` and rebuild
+the CLI. Point a custom daemon with `NEXT_PUBLIC_RUNSCAPE_HTTP` and
+`NEXT_PUBLIC_RUNSCAPE_WS`.
 
 ## Privacy and security
 
@@ -108,7 +124,7 @@ in code, and never put "daemon" in user-visible strings. See the glossary in
 
 ## What it cannot see
 
-DevPulse never invents a fact the OS did not give it (`AGENTS.md` rule 3).
+Runscape never invents a fact the OS did not give it (`AGENTS.md` rule 3).
 Unprivileged on macOS and Linux, that means:
 
 * processes owned by other users disclose no cwd, argv or executable, so they
@@ -125,13 +141,13 @@ many fields the last collection could not read. See
 ## Repository layout
 
 ```text
-crates/devpulse-core        domain model, identity, grouping, registry, topology
-crates/devpulse-discovery   processes, sockets, file watching, platform limits
-crates/devpulse-events      snapshot diffing, warning rules, correlation
-crates/devpulse-docker      Docker inspection via Bollard
-crates/devpulse-storage     SQLite persistence and retention
-crates/devpulse-server      the daemon: snapshot loop, HTTP + WebSocket API
-crates/devpulse-cli         the `devpulse` binary (scans, daemon, headless agent CLI)
+crates/runscape-core        domain model, identity, grouping, registry, topology
+crates/runscape-discovery   processes, sockets, file watching, platform limits
+crates/runscape-events      snapshot diffing, warning rules, correlation
+crates/runscape-docker      Docker inspection via Bollard
+crates/runscape-storage     SQLite persistence and retention
+crates/runscape-server      the daemon: snapshot loop, HTTP + WebSocket API
+crates/runscape-cli         the `runscape` binary (scans, daemon, headless agent CLI)
 apps/web                    the dashboard (Next.js, TypeScript, Tailwind)
 fixtures                    deterministic TCP fixtures used by the tests
 docs                        API contract, spike results, verification records
@@ -148,4 +164,4 @@ cd apps/web && bun run lint && bun run typecheck && bun test
 ```
 
 `apps/web`'s test suite includes a contract check against a *running* daemon; it
-skips itself when nothing is listening on 7778, and runs when there is.
+skips itself when nothing is listening on 2013, and runs when there is.

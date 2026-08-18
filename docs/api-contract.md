@@ -1,4 +1,4 @@
-# DevPulse local API contract (v1)
+# Runscape local API contract (v1)
 
 The daemon is the single source of runtime truth (`AGENTS.md` rule 8). The
 dashboard renders it and never recomputes it.
@@ -7,10 +7,10 @@ dashboard renders it and never recomputes it.
 
 | Property | Value |
 | --- | --- |
-| Bind address | `127.0.0.1:7778`, loopback only, never `0.0.0.0` |
+| Bind address | `127.0.0.1:2013`, loopback only, never `0.0.0.0`. The UI is `http://localhost:2013`. |
 | Scheme | `http` / `ws` |
 | Auth | none — reachability is the boundary |
-| CORS | allow-list only: `http://localhost:3000`, `http://127.0.0.1:3000` |
+| CORS | allow-list only: dashboard origin (`http://127.0.0.1:<port>` / `http://localhost:<port>`) plus Next.js dev `http://localhost:3000` and `http://127.0.0.1:3000` |
 | Methods | `GET` only. No mutating endpoint exists in the MVP (`DECISIONS.md` D004) |
 
 No endpoint accepts a filesystem path, a command, or anything else that could
@@ -62,7 +62,18 @@ Daemon liveness and self-reported capability. Cheap; safe to poll.
   "collectors": {
     "process": { "last_duration_ms": 6, "last_run": "2026-08-17T10:02:35Z", "degraded_fields": { "cwd": 190 } },
     "socket":  { "last_duration_ms": 1, "last_run": "2026-08-17T10:02:35Z", "sockets_without_owner": 0 }
-  }
+  },
+  "host": {
+    "at": "2026-08-17T10:02:35Z",
+    "load_avg_1": 1.42,
+    "load_avg_5": 1.18,
+    "load_avg_15": 1.05,
+    "process_count": 412
+  },
+  "host_history": [
+    { "at": "2026-08-17T10:02:34Z", "load_avg_1": 1.40, "load_avg_5": 1.18, "load_avg_15": 1.05, "process_count": 410 },
+    { "at": "2026-08-17T10:02:35Z", "load_avg_1": 1.42, "load_avg_5": 1.18, "load_avg_15": 1.05, "process_count": 412 }
+  ]
 }
 ```
 
@@ -72,8 +83,8 @@ Daemon liveness and self-reported capability. Cheap; safe to poll.
 [
   {
     "id": "prj_ab12cd34ef56",
-    "name": "devpulse-spike",
-    "root": "/private/tmp/devpulse-spike",
+    "name": "runscape-spike",
+    "root": "/private/tmp/runscape-spike",
     "kind": "git_repository",       // git_repository | workspace | package | compose_stack
     "confidence": 0.95,
     "first_seen": "2026-08-17T09:58:10Z",
@@ -90,12 +101,13 @@ Daemon liveness and self-reported capability. Cheap; safe to poll.
 
 ## `GET /api/v1/projects/:id`
 
-The project, its services (same shape as `/services/:id`), its edges, and its
-most recent events.
+The project, its services (same shape as `/services/:id`), its edges, a
+per-tick sum of those services' resource samples, and its most recent events.
 
 ```jsonc
 {
   "project": { /* as above */ },
+  "resource_history": [ /* ResourceSample, oldest first; omitted when empty */ ],
   "services": [ /* Service */ ],
   "connections": [ /* Connection */ ],
   "warnings": [ /* Warning */ ],
@@ -114,7 +126,7 @@ most recent events.
   "name": "web",
   "kind": { "kind": "host_process" },   // or { "kind": "container", "name": "...", "compose_project": "...", "compose_service": "..." }
   "runtime": "node",                     // node | bun | deno | python | rust | go | java | ruby | php | dotnet | container | native
-  "fingerprint": "host|prj_ab12cd34ef56|node|node|/private/tmp/devpulse-spike/web|41010",
+  "fingerprint": "host|prj_ab12cd34ef56|node|node|/private/tmp/runscape-spike/web|41010",
   "health": "healthy",
   "restart_count": 0,
   "first_seen": "2026-08-17T09:58:10Z",
@@ -125,18 +137,31 @@ most recent events.
       "parent_pid": 71309,
       "executable": "/opt/homebrew/bin/node",
       "command": ["node", "server.js", "--api-key", "<redacted>"],
-      "cwd": "/private/tmp/devpulse-spike/web",
+      "cwd": "/private/tmp/runscape-spike/web",
       "started_at": "2026-08-17T09:58:10Z",
       "cpu_percent": 0.4,
       "memory_bytes": 38400000
     }
   ],
   "endpoints": [ { "address": "127.0.0.1", "port": 41010, "protocol": "tcp", "pid": 76466 } ],
-  "resource_history": [ { "at": "2026-08-17T10:02:35Z", "cpu_percent": 0.4, "memory_bytes": 38400000 } ],
+  "resource_history": [
+    {
+      "at": "2026-08-17T10:02:35Z",
+      "cpu_percent": 0.4,
+      "memory_bytes": 38400000,
+      "virtual_memory_bytes": 128000000,
+      "thread_count": 11,
+      "disk_read_bytes": 4096,
+      "disk_write_bytes": 512,
+      "connection_count": 2
+    }
+  ],
   "connections": { "outbound": [ /* Connection */ ], "inbound": [ /* Connection */ ] },
   "recent_events": [ /* Event, newest first, capped at 50 */ ]
 }
 ```
+
+`disk_read_bytes` and `disk_write_bytes` are **deltas since the previous sample**, not lifetime totals. `connection_count` is the number of observed topology edges touching the service on that tick — not network byte I/O. Host `load_avg_*` values come from `sysinfo::System::load_average()`; `process_count` is the size of the process table on that tick.
 
 `command` is **always** already redacted; the daemon never holds raw argv.
 
@@ -176,7 +201,7 @@ Newest first.
     "at": "2026-08-17T10:02:35Z",
     "project_id": "prj_ab12cd34ef56",
     "kind": {
-      "type": "service_restarted",   // see EventKind in devpulse-core
+      "type": "service_restarted",   // see EventKind in runscape-core
       "service_id": "svc_1122aabbccdd",
       "old_pid": 76466,
       "new_pid": 76901
@@ -222,7 +247,7 @@ Rules:
 ## `GET /api/v1/warnings`
 
 Every currently active warning, newest activity first. Optional `project_id`
-filter. Warnings come from the deterministic rules in `devpulse-events`
+filter. Warnings come from the deterministic rules in `runscape-events`
 (`TASKS.md` T7.3) and clear as soon as their condition stops being true.
 
 ```jsonc
@@ -265,7 +290,7 @@ What happened around one event (`TASKS.md` T7.4). Optional `window_ms`
 ```
 
 `relation` says why two events are near each other. It is never "caused by":
-DevPulse reports ordering and lets the developer draw the conclusion
+Runscape reports ordering and lets the developer draw the conclusion
 (`DECISIONS.md` D008).
 
 `404` with `code: "not_found"` when the event has fallen out of the daemon's
@@ -273,8 +298,8 @@ in-memory ring.
 
 ## Implementation status (0.1)
 
-The routes above are served by `devpulse-server` and exercised by
-`crates/devpulse-server/tests/`. Where the running daemon is narrower than this
+The routes above are served by `runscape-server` and exercised by
+`crates/runscape-server/tests/`. Where the running daemon is narrower than this
 document, it is narrower on purpose:
 
 | Area | Status |

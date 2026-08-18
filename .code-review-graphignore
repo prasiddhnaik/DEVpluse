@@ -1,0 +1,7 @@
+# Next.js static export bundled into the daemon (not source).
+crates/runscape-server/dashboard/
+**/_next/
+# Generated / vendor
+apps/web/.next/
+apps/web/node_modules/
+**/target/

@@ -1,0 +1,5 @@
+{
+  "framework": "nextjs",
+  "installCommand": "bun install",
+  "buildCommand": "NEXT_PUBLIC_RUNSCAPE_DEMO=1 bun run build"
+}

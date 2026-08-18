@@ -1,33 +1,79 @@
 @import "tailwindcss";
 
 /*
- * One neutral surface, one accent, and health colours that carry meaning.
- * Anything that looks like a status here must come from the daemon, never from
- * a guess made in the browser.
+ * Dark surfaces follow T3 Code Nightly: true-black canvas, cool off-white
+ * type, hairline white borders, indigo actions. Health colours stay
+ * semantic — they come from the daemon, never from the theme.
  *
- * Tokens use light-dark() so they follow `color-scheme`. Nesting `@theme`
- * inside a prefers-color-scheme media query is ignored by Tailwind v4, which
- * left the dashboard on the wrong surface with unreadable contrast.
+ * `dark:` is class-based (html.dark). Nesting `@theme` in a media query is
+ * ignored by Tailwind v4, which is why tokens live here as literals.
  */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
-  --color-surface: light-dark(oklch(99% 0 0), oklch(17% 0.008 260));
-  --color-surface-raised: light-dark(oklch(100% 0 0), oklch(21% 0.008 260));
-  --color-line: light-dark(oklch(92% 0.004 260), oklch(30% 0.01 260));
+  --color-surface: #000000;
+  --color-surface-raised: #0a0a0a;
+  --color-line: rgb(255 255 255 / 8%);
+  --color-ink: #f1f3f7;
+  --color-muted: #a3a3a3;
+  --color-accent: oklch(0.571 0.21 264);
+
+  --color-zinc-50: #f7f9ff;
+  --color-zinc-100: #f1f3f7;
+  --color-zinc-200: #d8dce6;
+  --color-zinc-300: #b8bcc8;
+  --color-zinc-400: #a3a3a3;
+  --color-zinc-500: #8a8d93;
+  --color-zinc-600: #5c5f68;
+  --color-zinc-700: #3a3d44;
+  --color-zinc-800: #191a1d;
+  --color-zinc-900: #0a0a0a;
+  --color-zinc-950: #000000;
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", monospace;
+  --radius-xl: 0.625rem;
+  --spacing-112: 28rem;
 }
 
 html,
 body {
   height: 100%;
-  color-scheme: light dark;
+  color-scheme: dark;
 }
 
 body {
-  background: var(--color-surface);
+  background-color: var(--color-surface);
+  background-image: radial-gradient(
+    1100px 420px at 50% -8%,
+    oklch(0.28 0.09 275 / 0.42),
+    transparent 70%
+  );
+  color: var(--color-ink);
+  font-family: var(--font-sans);
   font-feature-settings: "cv05", "ss01";
 }
 
+::selection {
+  background: rgb(180 203 255 / 25%);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 10%);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(255 255 255 / 18%);
+}
+
 /* A live value that just changed should catch the eye once, not pulse forever. */
-@keyframes devpulse-flash {
+@keyframes runscape-flash {
   from {
     background-color: color-mix(in oklch, currentColor 12%, transparent);
   }
@@ -36,6 +82,6 @@ body {
   }
 }
 
-.devpulse-flash {
-  animation: devpulse-flash 900ms ease-out;
+.runscape-flash {
+  animation: runscape-flash 900ms ease-out;
 }

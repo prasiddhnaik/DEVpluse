@@ -84,6 +84,20 @@ describe("ServiceGraph", () => {
     expect(html).not.toContain("min-w-full");
   });
 
+  test("isolated services wrap into a grid instead of one tall column", () => {
+    const services = Array.from({ length: 10 }, (_, index) =>
+      service(`svc_${index}`, `s${index}`, null),
+    );
+    const html = renderToStaticMarkup(
+      <ServiceGraph services={services} connections={[]} />,
+    );
+
+    const width = Number(/width="(\d+)"/.exec(html)?.[1]);
+    const height = Number(/height="(\d+)"/.exec(html)?.[1]);
+    expect(width).toBe(1024);
+    expect(height).toBe(266);
+  });
+
   test("an observed edge is solid and an inferred one is not", () => {
     const services = [service("svc_a", "web", 3000), service("svc_b", "db", 5432)];
 

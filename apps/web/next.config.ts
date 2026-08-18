@@ -6,6 +6,10 @@ import type { NextConfig } from "next";
 const appDir = path.dirname(fileURLToPath(import.meta.url));
 
 const config: NextConfig = {
+  // The daemon embeds this export and serves it on loopback. There is no
+  // Next server in `runscape serve`.
+  output: "export",
+  images: { unoptimized: true },
   // The dashboard is a client of the local daemon and holds no server state of
   // its own (AGENTS.md rule 8), so there is nothing here to configure yet.
   reactStrictMode: true,

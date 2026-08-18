@@ -1,5 +1,5 @@
 /**
- * Wire types, mirroring `docs/api-contract.md` and `crates/devpulse-server/src/dto.rs`.
+ * Wire types, mirroring `docs/api-contract.md` and `crates/runscape-server/src/dto.rs`.
  *
  * These are the *daemon's* shapes, deliberately not remodelled: the daemon owns
  * runtime truth and the dashboard renders it (`AGENTS.md` rule 8). If a field is
@@ -56,6 +56,14 @@ export interface ResourceSample {
   at: string;
   cpu_percent: number;
   memory_bytes: number;
+  virtual_memory_bytes: number;
+  thread_count: number;
+  /** Bytes read since the previous sample, not a lifetime total. */
+  disk_read_bytes: number;
+  /** Bytes written since the previous sample, not a lifetime total. */
+  disk_write_bytes: number;
+  /** Observed topology edges touching this service this tick. Not network bytes. */
+  connection_count: number;
 }
 
 export type ServiceKind =
@@ -85,7 +93,7 @@ export interface Service {
 
 export interface ServiceDetail extends Service {
   connections: { outbound: Connection[]; inbound: Connection[] };
-  recent_events: DevPulseEvent[];
+  recent_events: RunscapeEvent[];
 }
 
 export type Severity = "info" | "warning" | "critical";
@@ -102,6 +110,30 @@ export interface Warning {
   related_events: string[];
 }
 
+/** One service's share of a project's measured CPU or memory. Daemon-ranked. */
+export interface RankedService {
+  id: string;
+  name: string;
+  project_id?: string | null;
+  project_name?: string | null;
+  cpu_percent: number;
+  memory_bytes: number;
+  /** 0.0..=1.0 of the measured total for the axis this list was sorted on. */
+  share: number;
+  process_count: number;
+  resources_measured: boolean;
+  peak_cpu_percent?: number | null;
+  peak_cpu_at?: string | null;
+  peak_memory_bytes?: number | null;
+  peak_memory_at?: string | null;
+}
+
+export interface DominantService {
+  id: string;
+  name: string;
+  share: number;
+}
+
 export interface ProjectSummary {
   id: string;
   name: string;
@@ -116,14 +148,20 @@ export interface ProjectSummary {
   memory_bytes: number;
   cpu_percent: number;
   recent_warning: Warning | null;
+  /** Hottest running services this tick. Omitted when none are running. */
+  ranked_by_cpu?: RankedService[];
+  ranked_by_memory?: RankedService[];
+  dominant_memory?: DominantService | null;
 }
 
 export interface ProjectDetail {
   project: ProjectSummary;
+  /** Per-tick sum of this project's service samples. Omitted when empty. */
+  resource_history?: ResourceSample[];
   services: Service[];
   connections: Connection[];
   warnings: Warning[];
-  recent_events: DevPulseEvent[];
+  recent_events: RunscapeEvent[];
 }
 
 export type EventKind =
@@ -150,7 +188,7 @@ export type EventKind =
   | { type: "resource_warning"; service_id: string; detail: string }
   | { type: "file_changed"; project_id: string; path: string };
 
-export interface DevPulseEvent {
+export interface RunscapeEvent {
   id: string;
   at: string;
   project_id: string | null;
@@ -164,14 +202,14 @@ export type Relation =
   | "preceding_file_change"
   | "temporal";
 
-export interface RelatedEvent extends DevPulseEvent {
+export interface RelatedEvent extends RunscapeEvent {
   relation: Relation;
   /** Negative is before the anchor. */
   offset_ms: number;
 }
 
 export interface EventContext {
-  event: DevPulseEvent;
+  event: RunscapeEvent;
   window_ms: number;
   before: RelatedEvent[];
   after: RelatedEvent[];
@@ -204,6 +242,15 @@ export interface CollectorStatus {
   error?: string;
 }
 
+/** Host-wide sample from the process collector. */
+export interface HostSample {
+  at: string;
+  load_avg_1: number;
+  load_avg_5: number;
+  load_avg_15: number;
+  process_count: number;
+}
+
 export interface Status {
   version: string;
   started_at: string;
@@ -231,6 +278,8 @@ export interface Status {
     socket: CollectorStatus;
     container?: CollectorStatus;
   };
+  host?: HostSample | null;
+  host_history?: HostSample[];
 }
 
 /** Frames the daemon pushes over `/ws/v1`. */
@@ -244,7 +293,7 @@ export type ServerFrame =
       connections: Connection[];
       warnings: Warning[];
     }
-  | { type: "events"; at: string; events: DevPulseEvent[] }
+  | { type: "events"; at: string; events: RunscapeEvent[] }
   | {
       type: "services_changed";
       at: string;

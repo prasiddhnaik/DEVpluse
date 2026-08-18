@@ -7,7 +7,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { reduce, type DaemonView } from "./daemon";
-import type { Connection, DevPulseEvent, ServerFrame, Service, Warning } from "./types";
+import type { Connection, RunscapeEvent, ServerFrame, Service, Warning } from "./types";
 
 const base: DaemonView = {
   connection: "connecting",
@@ -69,7 +69,7 @@ function warning(id: string): Warning {
   };
 }
 
-function event(id: string, at: string): DevPulseEvent {
+function event(id: string, at: string): RunscapeEvent {
   return {
     id,
     at,

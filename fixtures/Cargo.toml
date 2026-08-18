@@ -1,6 +1,6 @@
 [package]
-name = "devpulse-fixtures"
-description = "Deterministic fixture processes used to verify DevPulse discovery."
+name = "runscape-fixtures"
+description = "Deterministic fixture processes used to verify Runscape discovery."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,6 +19,6 @@ path = "src/bin/fixture_tcp_client.rs"
 clap.workspace = true
 
 [dev-dependencies]
-devpulse-core.workspace = true
-devpulse-discovery.workspace = true
+runscape-core.workspace = true
+runscape-discovery.workspace = true
 tokio = { workspace = true, features = ["process", "io-util"] }

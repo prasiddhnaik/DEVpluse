@@ -1,0 +1,37 @@
+[package]
+name = "runscape-server"
+description = "Runscape daemon: snapshot loop, shared runtime state, HTTP/WebSocket API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+runscape-core.workspace = true
+runscape-discovery.workspace = true
+runscape-docker.workspace = true
+runscape-events.workspace = true
+runscape-storage.workspace = true
+
+anyhow.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+notify.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "signal", "net"] }
+tower-http.workspace = true
+tracing.workspace = true
+rust-embed.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+runscape-events.workspace = true
+runscape-storage.workspace = true
+bollard.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["process", "io-util"] }
+tokio-tungstenite.workspace = true
+tower.workspace = true

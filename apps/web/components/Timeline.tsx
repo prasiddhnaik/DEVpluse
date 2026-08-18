@@ -12,7 +12,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
 import { clock, describeEvent, eventTone, offset } from "@/lib/format";
-import type { DevPulseEvent, EventContext, Relation, Service } from "@/lib/types";
+import type { RunscapeEvent, EventContext, Relation, Service } from "@/lib/types";
 
 const RELATION_LABEL: Record<Relation, string> = {
   same_service: "same service",
@@ -25,7 +25,7 @@ export function Timeline({
   events,
   services,
 }: {
-  events: DevPulseEvent[];
+  events: RunscapeEvent[];
   services: Service[];
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
@@ -34,9 +34,8 @@ export function Timeline({
 
   if (events.length === 0) {
     return (
-      <p className="rounded-lg border border-dashed border-line p-6 text-sm text-zinc-500">
-        Nothing has happened yet. Start or stop a service and it will appear
-        here.
+      <p className="px-3 py-6 text-sm text-zinc-500">
+        Nothing has happened yet. Start or stop a service and it will appear here.
       </p>
     );
   }
