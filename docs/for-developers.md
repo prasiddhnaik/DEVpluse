@@ -22,6 +22,11 @@ you run `devpulse serve`
 This document is the product, end to end. Install commands live in `README.md`.
 The HTTP contract lives in `docs/api-contract.md`.
 
+**UI: "local pulse worker" = the local DevPulse daemon (`devpulse serve`).**
+Developers should keep saying *daemon* in code, crates, and PRs. Do not put
+"daemon" in user-visible dashboard strings; the UI says "local pulse worker"
+(or a grammatical variant: "the local pulse worker", "Local pulse worker").
+
 ---
 
 ## The problem it is for
@@ -47,7 +52,7 @@ Two processes, on purpose:
 
 | Process | Command | Role |
 | --- | --- | --- |
-| Daemon | `devpulse serve` | Discovers the machine, keeps state, serves `127.0.0.1:7778` |
+| Daemon (UI: local pulse worker) | `devpulse serve` | Discovers the machine, keeps state, serves `127.0.0.1:7778` |
 | Dashboard | `cd apps/web && bun dev` | Renders that state at `http://localhost:3000` |
 
 The dashboard never invents health, topology, or identity. If a fact is on

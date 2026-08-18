@@ -5,7 +5,7 @@
 import Link from "next/link";
 
 import { HealthDot } from "@/components/HealthDot";
-import { useDaemon, type ConnectionState } from "@/lib/daemon";
+import { localPulseWorker, useDaemon, type ConnectionState } from "@/lib/daemon";
 import { ago, bytes, healthStyle, percent, severityStyle, shortenPath } from "@/lib/format";
 import type { ProjectSummary } from "@/lib/types";
 
@@ -34,7 +34,7 @@ export default function ProjectsPage() {
   );
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))] gap-4">
       {sorted.map((project) => (
         <ProjectCard key={project.id} project={project} />
       ))}
@@ -48,7 +48,7 @@ function ProjectCard({ project }: { project: ProjectSummary }) {
   return (
     <Link
       href={`/projects/${project.id}`}
-      className="flex flex-col gap-3 rounded-xl border border-line bg-surface-raised p-4 transition hover:border-zinc-400 dark:hover:border-zinc-600"
+      className="flex flex-col gap-3 rounded-xl border border-line bg-surface-raised p-4 transition hover:border-white/15"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -101,11 +101,11 @@ function emptyCopy(connection: ConnectionState): string {
     case "connected":
       return "DevPulse groups processes into projects by their working directory. Start a dev server inside a git repository and it will appear here within a second.";
     case "reconnecting":
-      return "The daemon dropped; the dashboard is reconnecting and will refill this view.";
+      return `The ${localPulseWorker()} dropped; the dashboard is reconnecting and will refill this view.`;
     case "connecting":
-      return "Connecting to the local daemon…";
+      return `Connecting to ${localPulseWorker()}…`;
     case "disconnected":
-      return "The daemon is not running.";
+      return `The ${localPulseWorker()} is not running.`;
     default: {
       const _exhaustive: never = connection;
       return _exhaustive;
@@ -138,10 +138,10 @@ function EmptyState({
 
 function DaemonDown() {
   return (
-    <div className="rounded-xl border border-dashed border-rose-300 p-8 text-sm dark:border-rose-900">
-      <h2 className="text-base font-medium">The daemon is not running</h2>
+    <div className="rounded-xl border border-dashed border-rose-900 p-8 text-sm">
+      <h2 className="text-base font-medium">The {localPulseWorker()} is not running</h2>
       <p className="pt-2 text-zinc-500">Start it and this page will reconnect:</p>
-      <pre className="mt-3 w-fit rounded-md bg-zinc-900 px-3 py-2 font-mono text-xs text-zinc-100">
+      <pre className="mt-3 w-fit rounded-md border border-line bg-zinc-800 px-3 py-2 font-mono text-xs text-ink">
         devpulse serve
       </pre>
     </div>

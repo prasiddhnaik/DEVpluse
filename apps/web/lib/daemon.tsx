@@ -2,6 +2,7 @@
 
 /**
  * The live connection to the daemon (task T4.2).
+ * User-facing UI copy must say "local pulse worker", never "daemon".
  *
  * One WebSocket for the whole app: it delivers a snapshot on connect and
  * incremental frames afterwards. On reconnect the client asks for a fresh
@@ -34,6 +35,11 @@ import type {
 } from "./types";
 
 export type ConnectionState = "connecting" | "connected" | "reconnecting" | "disconnected";
+
+/** UI: "local pulse worker" = the local DevPulse daemon (`devpulse serve`). Never show "daemon" in the dashboard. */
+export function localPulseWorker(): string {
+  return "local pulse worker";
+}
 
 /** Events kept for the timeline. The daemon holds far more; ask it for those. */
 const EVENT_BUFFER = 500;

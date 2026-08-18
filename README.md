@@ -82,7 +82,10 @@ bun dev
 
 It connects to `ws://127.0.0.1:7778/ws/v1`, renders what the daemon sends, and
 computes no runtime facts of its own (`AGENTS.md` rule 8). Point it at another
-daemon with `NEXT_PUBLIC_DEVPULSE_HTTP` and `NEXT_PUBLIC_DEVPULSE_WS`.
+daemon with `NEXT_PUBLIC_DEVPULSE_HTTP` and `NEXT_PUBLIC_DEVPULSE_WS`. The
+dashboard UI calls this process the **local pulse worker**; keep saying *daemon*
+in code, and never put "daemon" in user-visible strings. See the glossary in
+[`docs/for-developers.md`](docs/for-developers.md).
 
 ## Privacy and security
 
